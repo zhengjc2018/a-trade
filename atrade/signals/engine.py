@@ -1,9 +1,25 @@
 """做 T 信号检测引擎。
 
-输出：
-- SignalType: BUY（低吸）/ SELL（高抛）/ STOP_LOSS（止损）
-- SignalStrength: WEAK / MEDIUM / STRONG
-- 每个信号带触发原因、建议价格、目标价、止损价
+本版本针对"满仓被套做 T"场景设计。
+
+信号类型:
+- SignalType.BUY：低吸（建 T 仓）
+- SignalType.SELL：高抛（清 T 仓）
+- SignalType.STOP_LOSS：趋势性止损
+- SignalType.WATCH：仅观察，不动手
+
+评分体系:
+- 每个信号带 strength: WEAK / MEDIUM / STRONG
+- strength 由"因子共振数"决定：1 个因子命中 WEAK，2 个 MEDIUM，3+ 个 STRONG
+
+因子集合（新增的设计思路）:
+1. **波段反弹**：60 日跌幅 > 15% + 近 3 日缩量 + RSI 在 30-50 区间
+2. **趋势确认**：MA5 上穿 MA10 + 量比 > 1.2
+3. **放量突破**：突破 60 日新高 + 量比 > 1.5
+4. **超卖反弹**：RSI < 25 + 触及 BOLL 下轨 + 量比放大
+5. **放量拉升**（SELL）：量比 > 3 + 涨幅 > 5%
+6. **MACD 顶背离**（SELL）：价格新高 + MACD HIST 不新高
+7. **跌破 MA20**（STOP_LOSS）：连续 3 日 close < MA20
 """
 
 from __future__ import annotations
@@ -18,10 +34,10 @@ from loguru import logger
 
 
 class SignalType(str, Enum):
-    BUY = "buy"             # 低吸
-    SELL = "sell"           # 高抛
-    STOP_LOSS = "stop_loss"  # 止损
-    WATCH = "watch"         # 仅观察
+    BUY = "buy"
+    SELL = "sell"
+    STOP_LOSS = "stop_loss"
+    WATCH = "watch"
 
 
 class SignalStrength(str, Enum):
@@ -36,185 +52,222 @@ class Signal:
     symbol: str
     signal_type: SignalType
     strength: SignalStrength
-    name: str                    # 信号名（如 "超卖反弹"）
-    reason: str                  # 触发原因（人话）
-    trigger_price: float         # 触发时价格
-    target_price: Optional[float] = None   # 目标价
-    stop_loss: Optional[float] = None       # 建议止损
-    position_pct: float = 0.33   # 建议仓位比例（默认 1/3）
+    name: str
+    reason: str
+    trigger_price: float
+    target_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    position_pct: float = 0.33
+    # 用于回测 / 显示
+    factor_hits: list[str] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M"))
 
 
 class SignalEngine:
-    """信号检测引擎。
-    
-    用法：
-        engine = SignalEngine()
-        signals = engine.scan("600519")
-    """
+    """信号检测引擎。"""
 
     def scan(self, symbol: str, df: pd.DataFrame) -> list[Signal]:
-        """扫描单只股票的所有信号。"""
+        """扫描所有信号，按 direction 分组返回 BUY / SELL / STOP_LOSS。"""
         if df is None or len(df) < 30:
-            logger.warning(f"{symbol}: 数据不足（{len(df) if df is not None else 0} 行）")
             return []
 
-        signals = []
+        signals: list[Signal] = []
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         price = latest["close"]
 
-        # 信号 1: 超卖反弹（低吸）
-        s = self._signal_oversold_rebound(symbol, df, latest, price)
-        if s: signals.append(s)
+        # ---- BUY 信号：收集各因子，合并为打分 ----
+        buy_factors: list[tuple[str, str]] = []  # (factor_name, reason)
 
-        # 信号 2: 突破回踩（低吸）
-        s = self._signal_breakout_pullback(symbol, df, latest, prev, price)
-        if s: signals.append(s)
+        # 因子 1: 波段反弹（60 日跌幅 > 15% + 缩量 + RSI 在 30-50）
+        h = self._factor_wave_rebound(df, latest)
+        if h: buy_factors.append(h)
 
-        # 信号 3: 放量拉升（高抛）
-        s = self._signal_volume_surge(symbol, df, latest, prev, price)
-        if s: signals.append(s)
+        # 因子 2: 趋势确认（MA5 上穿 MA10 + 量比放大）
+        h = self._factor_trend_confirm(df, latest, prev)
+        if h: buy_factors.append(h)
 
-        # 信号 4: MACD 顶背离（高抛）
-        s = self._signal_macd_divergence(symbol, df, latest, price)
-        if s: signals.append(s)
+        # 因子 3: 放量突破（60 日新高 + 量比 > 1.5）
+        h = self._factor_breakout(df, latest)
+        if h: buy_factors.append(h)
 
-        # 信号 5: 跌破止损
-        s = self._signal_stop_loss(symbol, df, latest, price)
-        if s: signals.append(s)
+        # 因子 4: 超卖反弹（RSI < 25 + 触及 BOLL 下轨）
+        h = self._factor_oversold(df, latest)
+        if h: buy_factors.append(h)
+
+        if buy_factors:
+            n = len(buy_factors)
+            strength = SignalStrength.STRONG if n >= 3 else (
+                SignalStrength.MEDIUM if n == 2 else SignalStrength.WEAK
+            )
+            reasons = "；".join(r for _, r in buy_factors)
+            factor_names = [f for f, _ in buy_factors]
+            signals.append(Signal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                strength=strength,
+                name=f"BUY({n}因子共振)",
+                reason=f"共振因子: {', '.join(factor_names)}。{reasons}",
+                trigger_price=price,
+                target_price=price * 1.03,
+                stop_loss=price * 0.97,
+                position_pct=0.33,
+                factor_hits=factor_names,
+            ))
+
+        # ---- SELL 信号 ----
+        for s in self._signals_sell(df, latest, prev, price, symbol):
+            signals.append(s)
+
+        # ---- STOP_LOSS：连续 3 日 close < MA20 才触发（更保守）----
+        if self._check_stop_loss_strict(df, latest):
+            signals.append(Signal(
+                symbol=symbol,
+                signal_type=SignalType.STOP_LOSS,
+                strength=SignalStrength.STRONG,
+                name="跌破MA20(连续3日)",
+                reason="连续 3 日收盘低于 MA20，趋势走弱",
+                trigger_price=price,
+                stop_loss=price * 0.95,
+                position_pct=0.5,
+            ))
 
         return signals
 
     # ============================================================
-    # 信号 1: 超卖反弹
+    # BUY 因子
     # ============================================================
-    def _signal_oversold_rebound(
-        self, symbol: str, df: pd.DataFrame, latest: pd.Series, price: float
-    ) -> Optional[Signal]:
-        """RSI < 30 + 触及布林下轨 + 量比放大 → 超卖反弹"""
+    def _factor_wave_rebound(self, df: pd.DataFrame, latest: pd.Series
+                              ) -> Optional[tuple[str, str]]:
+        """波段反弹：60 日跌幅 > 15% + 近 3 日缩量 + RSI 30-50。"""
+        if len(df) < 60:
+            return None
+        close_60d_ago = df["close"].iloc[-61] if len(df) >= 61 else df["close"].iloc[0]
+        drop_pct = (latest["close"] - close_60d_ago) / close_60d_ago * 100
+        if drop_pct > -15:
+            return None
+        # 近 3 日均量 vs VOL_MA5
+        recent3_vol = df["volume"].iloc[-3:].mean()
+        vol_ma5 = latest.get("VOL_MA5", recent3_vol)
+        if recent3_vol >= vol_ma5:
+            return None
+        rsi = latest.get("RSI6", 50)
+        if not (30 <= rsi <= 50):
+            return None
+        return ("波段反弹",
+                f"60日跌幅 {drop_pct:.1f}%，3日均量 {recent3_vol:.0f} < VOL_MA5 {vol_ma5:.0f}，RSI6={rsi:.1f}")
+
+    def _factor_trend_confirm(self, df: pd.DataFrame,
+                               latest: pd.Series, prev: pd.Series
+                               ) -> Optional[tuple[str, str]]:
+        """趋势确认：MA5 上穿 MA10 + 量比 > 1.2。"""
+        ma5 = latest.get("MA5")
+        ma10 = latest.get("MA10")
+        prev_ma5 = prev.get("MA5")
+        prev_ma10 = prev.get("MA10")
+        if any(pd.isna([ma5, ma10, prev_ma5, prev_ma10])):
+            return None
+        # 上穿：前一日 ma5 <= ma10，今日 ma5 > ma10
+        if not (prev_ma5 <= prev_ma10 and ma5 > ma10):
+            return None
+        vol_ma5 = latest.get("VOL_MA5", 0)
+        if vol_ma5 <= 0:
+            return None
+        vol_ratio = latest["volume"] / vol_ma5
+        if vol_ratio < 1.2:
+            return None
+        return ("趋势确认",
+                f"MA5({ma5:.2f}) 上穿 MA10({ma10:.2f})，量比 {vol_ratio:.2f}")
+
+    def _factor_breakout(self, df: pd.DataFrame, latest: pd.Series
+                          ) -> Optional[tuple[str, str]]:
+        """放量突破：突破 60 日新高 + 量比 > 1.5。"""
+        high_60 = df["high"].iloc[-60:].max()
+        if latest["close"] < high_60 * 0.995:
+            return None
+        vol_ma5 = latest.get("VOL_MA5", 0)
+        if vol_ma5 <= 0:
+            return None
+        vol_ratio = latest["volume"] / vol_ma5
+        if vol_ratio < 1.5:
+            return None
+        return ("放量突破", f"突破 60 日新高 {high_60:.2f}，量比 {vol_ratio:.2f}")
+
+    def _factor_oversold(self, df: pd.DataFrame, latest: pd.Series
+                          ) -> Optional[tuple[str, str]]:
+        """超卖反弹：RSI < 25 + 触及 BOLL 下轨 + 量比放大。"""
         rsi = latest.get("RSI6", 50)
         close = latest["close"]
         boll_lower = latest.get("BOLL_LOWER", close)
-
-        if rsi < 30 and close <= boll_lower * 1.02:
-            # 强度：RSI 越低越强
-            strength = SignalStrength.STRONG if rsi < 20 else SignalStrength.MEDIUM
-            target = close * 1.03  # 反弹 3%
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.BUY,
-                strength=strength,
-                name="超卖反弹",
-                reason=f"RSI6={rsi:.1f} 超卖，触及布林下轨 {boll_lower:.2f}",
-                trigger_price=price,
-                target_price=target,
-                stop_loss=close * 0.97,
-                position_pct=0.33,
-            )
-        return None
-
-    # ============================================================
-    # 信号 2: 突破回踩
-    # ============================================================
-    def _signal_breakout_pullback(
-        self, symbol: str, df: pd.DataFrame, latest: pd.Series, prev: pd.Series, price: float
-    ) -> Optional[Signal]:
-        """最近 20 日新高 + 缩量回踩 → 低吸机会"""
-        close = latest["close"]
-        high_20 = df["high"].tail(20).max()
-
-        # 突破条件：前一日 close > 前 19 日最高 且 当日 close 在突破价 2% 之内
-        if prev["close"] >= high_20 * 0.99 and abs(close - high_20) / high_20 < 0.02:
-            # 量能缩量（最新成交量 < 5 日均量）
-            if latest["volume"] < latest["VOL_MA5"] * 0.85:
-                return Signal(
-                    symbol=symbol,
-                    signal_type=SignalType.BUY,
-                    strength=SignalStrength.MEDIUM,
-                    name="突破回踩",
-                    reason=f"突破 20 日新高 {high_20:.2f} 后缩量回踩",
-                    trigger_price=price,
-                    target_price=high_20 * 1.05,
-                    stop_loss=high_20 * 0.97,
-                    position_pct=0.33,
-                )
-        return None
-
-    # ============================================================
-    # 信号 3: 放量拉升
-    # ============================================================
-    def _signal_volume_surge(
-        self, symbol: str, df: pd.DataFrame, latest: pd.Series, prev: pd.Series, price: float
-    ) -> Optional[Signal]:
-        """量比 > 2 + 涨幅 > 3% → 高抛"""
-        vol_ratio = latest["volume"] / latest["VOL_MA5"] if latest["VOL_MA5"] > 0 else 1
-        pct_chg = (latest['close'] - prev['close']) / prev['close'] * 100
-
-        if vol_ratio > 2 and pct_chg > 3:
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.SELL,
-                strength=SignalStrength.STRONG if vol_ratio > 3 else SignalStrength.MEDIUM,
-                name="放量拉升",
-                reason=f"量比 {vol_ratio:.1f} 放大，涨幅 {pct_chg:+.1f}%，建议减仓",
-                trigger_price=price,
-                target_price=price * 0.97,  # 短期回踩目标
-                stop_loss=price * 1.03,
-                position_pct=0.33,
-            )
-        return None
-
-    # ============================================================
-    # 信号 4: MACD 顶背离
-    # ============================================================
-    def _signal_macd_divergence(
-        self, symbol: str, df: pd.DataFrame, latest: pd.Series, price: float
-    ) -> Optional[Signal]:
-        """价格新高 + MACD 不新高 → 顶背离，高抛"""
-        if len(df) < 30:
+        if rsi >= 25 or close > boll_lower * 1.02:
             return None
+        vol_ma5 = latest.get("VOL_MA5", 0)
+        if vol_ma5 <= 0:
+            return None
+        vol_ratio = latest["volume"] / vol_ma5
+        if vol_ratio < 1.3:
+            return None
+        return ("超卖反弹",
+                f"RSI6={rsi:.1f}, 触及 BOLL 下轨 {boll_lower:.2f}, 量比 {vol_ratio:.2f}")
 
-        recent = df.tail(20)
-        price_recent_high = recent["high"].max()
-        macd_recent_high = recent["MACD_HIST"].max()
-
-        # 当前价格接近 20 日新高，但 MACD HIST 比 20 日最高低
-        if price >= price_recent_high * 0.98:
-            latest_hist = latest["MACD_HIST"]
-            if latest_hist < macd_recent_high * 0.5 and latest_hist < 0:
-                return Signal(
-                    symbol=symbol,
-                    signal_type=SignalType.SELL,
+    # ============================================================
+    # SELL 信号（保留放量拉升 + MACD 顶背离）
+    # ============================================================
+    def _signals_sell(self, df: pd.DataFrame, latest: pd.Series,
+                       prev: pd.Series, price: float, symbol: str
+                       ) -> list[Signal]:
+        out = []
+        # 放量拉升
+        vol_ma5 = latest.get("VOL_MA5", 0)
+        if vol_ma5 > 0:
+            vol_ratio = latest["volume"] / vol_ma5
+            pct_chg = (latest["close"] - prev["close"]) / prev["close"] * 100
+            if vol_ratio > 3 and pct_chg > 5:
+                out.append(Signal(
+                    symbol=symbol, signal_type=SignalType.SELL,
                     strength=SignalStrength.STRONG,
-                    name="MACD 顶背离",
-                    reason=f"价格接近 20 日新高 {price_recent_high:.2f}，但 MACD HIST 背离（{latest_hist:.2f} vs 峰值 {macd_recent_high:.2f}）",
+                    name="放量拉升",
+                    reason=f"量比 {vol_ratio:.2f}, 涨幅 {pct_chg:.1f}%",
                     trigger_price=price,
-                    target_price=price * 0.95,
-                    stop_loss=price * 1.03,
-                    position_pct=0.5,
-                )
-        return None
+                    target_price=price * 0.97, stop_loss=price * 1.03,
+                    position_pct=0.33,
+                ))
+        # MACD 顶背离
+        if len(df) >= 30:
+            recent = df.tail(20)
+            price_recent_high = recent["high"].max()
+            macd_recent_high = recent["MACD_HIST"].max()
+            if latest["close"] >= price_recent_high * 0.98:
+                latest_hist = latest["MACD_HIST"]
+                if (latest_hist < macd_recent_high * 0.5
+                        and latest_hist < 0):
+                    out.append(Signal(
+                        symbol=symbol, signal_type=SignalType.SELL,
+                        strength=SignalStrength.STRONG,
+                        name="MACD 顶背离",
+                        reason=f"价格近 20 日新高 {price_recent_high:.2f}，MACD HIST 背离 ({latest_hist:.2f} vs {macd_recent_high:.2f})",
+                        trigger_price=price,
+                        target_price=price * 0.95, stop_loss=price * 1.03,
+                        position_pct=0.5,
+                    ))
+        return out
 
     # ============================================================
-    # 信号 5: 跌破止损
+    # STOP_LOSS（严格版：连续 3 日）
     # ============================================================
-    def _signal_stop_loss(
-        self, symbol: str, df: pd.DataFrame, latest: pd.Series, price: float
-    ) -> Optional[Signal]:
-        """收盘跌破 MA20 → 趋势走弱"""
-        close = latest["close"]
-        ma20 = latest["MA20"]
-
-        if close < ma20 * 0.98:
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.STOP_LOSS,
-                strength=SignalStrength.STRONG,
-                name="跌破 MA20",
-                reason=f"收盘 {close:.2f} 跌破 MA20 ({ma20:.2f})，趋势转弱",
-                trigger_price=price,
-                stop_loss=close * 0.95,
-                position_pct=0.5,
-            )
-        return None
+    def _check_stop_loss_strict(self, df: pd.DataFrame,
+                                 latest: pd.Series) -> bool:
+        if len(df) < 3:
+            return False
+        ma20 = latest.get("MA20")
+        if pd.isna(ma20):
+            return False
+        if latest["close"] >= ma20 * 0.98:
+            return False
+        # 前 2 日也得 close < ma20 * 0.98
+        for i in (-3, -2):
+            r = df.iloc[i]
+            r_ma20 = r.get("MA20")
+            if pd.isna(r_ma20) or r["close"] >= r_ma20 * 0.98:
+                return False
+        return True
