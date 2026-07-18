@@ -158,7 +158,7 @@ class LocalCache:
             sql = (
                 f"INSERT OR REPLACE INTO daily ({col_list}) VALUES ({placeholders})"
             )
-            c.executemany(sql, [[r[c] for c in cols] if all(c in r for c in cols) else [r.get(c) for c in cols] for r in payload])
+            c.executemany(sql, [[r.get(c) for c in cols] for r in payload])
             c.commit()
             logger.info(f"[cache] upsert daily {df['code'].iloc[0]} {len(df)} 行")
             return len(payload)

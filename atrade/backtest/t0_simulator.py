@@ -189,7 +189,6 @@ class T0Simulator:
         portfolio_values: list[tuple[str, float]] = []
         # 信号冷却：每种信号类型在 N 天内不重触
         last_signal_date: dict[str, str] = {}
-        i_last_signal: dict[str, int] = {}
 
         for i in range(30, len(df_ind)):
             row = df_ind.iloc[i]
@@ -232,13 +231,11 @@ class T0Simulator:
                 # 冷却检查：同类信号 N 天内不重触
                 key = sig.signal_type.value
                 if key in last_signal_date:
-                    from datetime import datetime as _dt
-                    last = _dt.strptime(last_signal_date[key], "%Y-%m-%d")
-                    cur = _dt.strptime(today, "%Y-%m-%d")
+                    last = datetime.strptime(last_signal_date[key], "%Y-%m-%d")
+                    cur = datetime.strptime(today, "%Y-%m-%d")
                     if (cur - last).days < self.signal_cooldown_days:
                         continue
                 last_signal_date[key] = today
-                i_last_signal[key] = i
 
                 if sig.signal_type == SignalType.STOP_LOSS:
                     if pos.t_holdings > 0 and not pos.is_locked(today):
