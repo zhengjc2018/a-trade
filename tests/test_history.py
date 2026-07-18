@@ -112,3 +112,25 @@ def test_eastmoney_fetch_snap_returns_dict():
     assert snap["code"] == "600519"
     assert snap["price"] == 1253.0
     assert snap["pe_ttm"] == 25.5
+
+
+def test_fetch_snap_falls_back_to_tx():
+    """东财反爬时，fetch_snap 应自动 fallback 到腾讯。"""
+    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx
+
+    fake_em = None
+    fake_tx = {
+        "code": "600519", "name": "贵州茅台", "price": 1253.0,
+        "pre_close": 1258.99, "open": 1269.01, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": 0.47,
+        "total_mv": 1.5e12, "float_mv": 1.5e12,
+        "total_share": None, "float_share": None,
+        "pe_ttm": None, "pb": None, "source": "tx",
+    }
+    from unittest.mock import patch
+    with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=fake_em), \
+         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx):
+        snap = fetch_snap("600519")
+    assert snap is not None
+    assert snap["source"] == "tx"
+    assert snap["price"] == 1253.0
