@@ -121,11 +121,12 @@ class T0Simulator:
 
     def __init__(
         self,
-        t_position_pct: float = 0.5,
+        t_position_pct: float = 0.33,
         fee_commission: float = 0.00025,
         fee_stamp_duty_sell: float = 0.001,
         slippage_pct: float = 0.0005,
         force_close_loss_pct: float = 0.05,
+        signal_cooldown_days: int = 5,
     ):
         self.history = HistoryProvider()
         self.engine = SignalEngine()
@@ -134,6 +135,8 @@ class T0Simulator:
         self.fee_stamp_duty_sell = fee_stamp_duty_sell
         self.slippage_pct = slippage_pct
         self.force_close_loss_pct = force_close_loss_pct
+        # 同方向信号 cooldown（避免短时间重复触发）
+        self.signal_cooldown_days = signal_cooldown_days
 
     # ---------- 工具 ----------
     def _slippage_buy(self, price: float) -> float:
@@ -184,6 +187,9 @@ class T0Simulator:
         t_position_max = 0
         t1_locks_held = 0
         portfolio_values: list[tuple[str, float]] = []
+        # 信号冷却：每种信号类型在 N 天内不重触
+        last_signal_date: dict[str, str] = {}
+        i_last_signal: dict[str, int] = {}
 
         for i in range(30, len(df_ind)):
             row = df_ind.iloc[i]
@@ -223,6 +229,17 @@ class T0Simulator:
             t_size = int(pos.base * self.t_position_pct)
 
             for sig in signals:
+                # 冷却检查：同类信号 N 天内不重触
+                key = sig.signal_type.value
+                if key in last_signal_date:
+                    from datetime import datetime as _dt
+                    last = _dt.strptime(last_signal_date[key], "%Y-%m-%d")
+                    cur = _dt.strptime(today, "%Y-%m-%d")
+                    if (cur - last).days < self.signal_cooldown_days:
+                        continue
+                last_signal_date[key] = today
+                i_last_signal[key] = i
+
                 if sig.signal_type == SignalType.STOP_LOSS:
                     if pos.t_holdings > 0 and not pos.is_locked(today):
                         sell_price = self._slippage_sell(cur_close)
@@ -305,8 +322,8 @@ class T0Simulator:
                         if pos.base < quantity:
                             pos.base += t_size
 
-            # 4. 收盘强制平仓（T 仓）
-            if force_eod_close and pos.t_holdings > 0:
+            # 4. 收盘强制平仓（T 仓）—— 仅在未被 T+1 锁仓时才平
+            if force_eod_close and pos.t_holdings > 0 and not pos.is_locked(today):
                 sell_price = self._slippage_sell(cur_close)
                 fee = self._calc_sell_fee(sell_price, pos.t_holdings)
                 profit = (sell_price - pos.t_avg_cost) * pos.t_holdings - fee

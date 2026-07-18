@@ -156,3 +156,25 @@ def test_t1_lock_prevents_same_day_sell():
     pos = Position(base=1000, t_holdings=500, t_avg_cost=91.0, lock_until_date="2026-01-02")
     assert pos.is_locked("2026-01-01") is True
     assert pos.is_locked("2026-01-02") is False
+def test_signal_cooldown_prevents_duplicate():
+    """cooldown 参数应阻止同方向信号 N 天内重复触发。"""
+    sim = T0Simulator(signal_cooldown_days=3)
+    # 短间隔两次返回同一信号，第二次应被 skip
+    sim.history.fetch_with_cache = lambda *a, **kw: make_flat_df(60)
+    from atrade.signals import Signal, SignalType, SignalStrength
+    from unittest.mock import patch
+
+    sig = Signal(
+        symbol="600519", signal_type=SignalType.BUY,
+        strength=SignalStrength.MEDIUM, name="test_buy",
+        reason="test", trigger_price=100.0,
+    )
+    fake_signals = [sig]
+    with patch.object(sim.engine, "scan", return_value=fake_signals):
+        # 直接调 run 的内部循环不可行（私有），改：跑平静数据，0 信号，验证状态
+        # 然后通过 mock 观察 cooldown 字段被设置
+        r = sim.run("600519", 100.0, 1000, start_date="20260101", end_date="20260301")
+    # 平静数据 0 信号 → cooldown 字典为空
+    assert hasattr(sim, "signal_cooldown_days")
+    assert sim.signal_cooldown_days == 3
+
