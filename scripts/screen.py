@@ -12,7 +12,9 @@
 
 注：
 - 东财接口有限频。snapshot 模式会拉 ~10 次拿全市场。
-- PE/PB 字段不在 clist 接口里。需要 PE/PB 时用 `atrade.screen_pe_pb`（拉单只的，反爬严重）。
+- clist 接口本身不带 PE/PB。screen 只展示价量/市值。
+- 需要 PE/PB 时用 `atrade.data.eastmoney.fetch_snap(code)`：
+  push2 → 腾讯价格 → datacenter 财报反推 (BVPS/TTM_EPS)。三层 fallback。
 """
 
 from __future__ import annotations

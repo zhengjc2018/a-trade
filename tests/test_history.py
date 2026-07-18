@@ -129,8 +129,151 @@ def test_fetch_snap_falls_back_to_tx():
     }
     from unittest.mock import patch
     with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=fake_em), \
-         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx):
+         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx), \
+         patch("atrade.data.eastmoney._fetch_datacenter", return_value=None):
         snap = fetch_snap("600519")
     assert snap is not None
     assert snap["source"] == "tx"
     assert snap["price"] == 1253.0
+    assert snap["pe_ttm"] is None
+    assert snap["pb"] is None
+
+
+# ---- datacenter fallback 测试 ----
+
+def test_fetch_snap_datacenter_derives_pe_pb():
+    """东财 + 腾讯都失败时, datacenter 财报接口应该能反推 PE/PB。"""
+    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx, _fetch_datacenter
+
+    fake_em = None  # push2 反爬
+    fake_tx = {
+        "code": "600519", "name": "贵州茅台", "price": 1253.0,
+        "pre_close": 1258.99, "open": 1269.01, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": 0.47,
+        "total_mv": 1.5e12, "float_mv": 1.5e12,
+        "total_share": None, "float_share": None,
+        "pe_ttm": None, "pb": None, "source": "tx",
+    }
+    fake_dc = {
+        "code": "600519", "name": None, "price": None,
+        "pre_close": None, "open": None, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": None,
+        "total_mv": None, "float_mv": None,
+        "total_share": 1252270215, "float_share": None,
+        "pe_ttm": None, "pb": None,
+        "bvps": 224.50, "ttm_eps": 66.04, "source": "datacenter",
+    }
+    from unittest.mock import patch
+    with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=fake_em), \
+         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx), \
+         patch("atrade.data.eastmoney._fetch_datacenter", return_value=fake_dc) as mock_dc:
+        snap = fetch_snap("600519")
+    assert mock_dc.called
+    assert snap is not None
+    # PE = 1253 / 66.04 = 18.97
+    assert abs(snap["pe_ttm"] - 18.97) < 0.1
+    # PB = 1253 / 224.50 = 5.58
+    assert abs(snap["pb"] - 5.58) < 0.1
+    assert snap["bvps"] == 224.50
+    assert snap["ttm_eps"] == 66.04
+    assert snap["total_share"] == 1252270215
+    assert snap["source"] == "tx+datacenter"
+
+
+def test_fetch_snap_datacenter_fails_returns_tx_without_pe():
+    """datacenter 也失败时, 返回腾讯层（PE/PB=None），不报错。"""
+    from atrade.data.eastmoney import fetch_snap
+    from unittest.mock import patch
+
+    fake_tx = {
+        "code": "600519", "name": "贵州茅台", "price": 1253.0,
+        "pre_close": 1258.99, "open": 1269.01, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": 0.47,
+        "total_mv": 1.5e12, "float_mv": 1.5e12,
+        "total_share": None, "float_share": None,
+        "pe_ttm": None, "pb": None, "source": "tx",
+    }
+    with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=None), \
+         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx), \
+         patch("atrade.data.eastmoney._fetch_datacenter", return_value=None):
+        snap = fetch_snap("600519")
+    assert snap is not None
+    assert snap["source"] == "tx"
+    assert snap["pe_ttm"] is None
+    assert snap["pb"] is None
+
+
+def test_calc_ttm_eps_uses_annual_when_only_annual():
+    """只有年报时, 直接用 EPSJB。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [{"REPORT_TYPE": "年报", "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"}]
+    assert _calc_ttm_eps(rows) == 65.66
+
+
+def test_calc_ttm_eps_uses_latest_quarter_when_no_annual():
+    """只有季报时, 用最新季。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [{"REPORT_TYPE": "一季报", "EPSJB": 21.76, "REPORT_DATE": "2026-03-31"}]
+    assert _calc_ttm_eps(rows) == 21.76
+
+
+def test_calc_ttm_eps_cross_year():
+    """跨年场景: TTM = 上一年年报 + 本年Q1 - 上一年Q1。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.76, "REPORT_DATE": "2026-03-31"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+        {"REPORT_TYPE": "三季报", "EPSJB": 51.53, "REPORT_DATE": "2025-09-30"},
+        {"REPORT_TYPE": "中报",   "EPSJB": 36.18, "REPORT_DATE": "2025-06-30"},
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.38, "REPORT_DATE": "2025-03-31"},
+    ]
+    # TTM = 65.66 + 21.76 - 21.38 = 66.04
+    assert abs(_calc_ttm_eps(rows) - 66.04) < 1e-6
+
+
+def test_calc_ttm_eps_same_year():
+    """同年年报+季报（罕见），退化为直接用年报。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.76, "REPORT_DATE": "2025-03-31"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+    ]
+    assert _calc_ttm_eps(rows) == 65.66
+
+
+def test_calc_ttm_eps_empty():
+    from atrade.data.eastmoney import _calc_ttm_eps
+    assert _calc_ttm_eps([]) is None
+
+
+def test_merge_pe_pb_basic():
+    """_merge_pe_pb 把 BVPS/TTM_EPS 转为 PE/PB。"""
+    from atrade.data.eastmoney import _merge_pe_pb
+    base = {"price": 100.0, "source": "tx"}
+    fin = {"bvps": 10.0, "ttm_eps": 5.0, "total_share": 1e9}
+    out = _merge_pe_pb(base, fin)
+    assert out["pe_ttm"] == 20.0
+    assert out["pb"] == 10.0
+    assert out["bvps"] == 10.0
+    assert out["ttm_eps"] == 5.0
+    assert out["source"] == "tx+datacenter"
+
+
+def test_merge_pe_pb_no_price():
+    """没价格就不算 PE/PB。"""
+    from atrade.data.eastmoney import _merge_pe_pb
+    base = {"price": None, "source": "tx"}
+    fin = {"bvps": 10.0, "ttm_eps": 5.0, "total_share": 1e9}
+    out = _merge_pe_pb(base, fin)
+    assert "pe_ttm" not in out
+    assert out["source"] == "tx"
+
+
+def test_merge_pe_pb_negative_eps_skipped():
+    """EPS <= 0 时不算 PE。"""
+    from atrade.data.eastmoney import _merge_pe_pb
+    base = {"price": 100.0, "source": "tx"}
+    fin = {"bvps": 10.0, "ttm_eps": -1.0, "total_share": 1e9}
+    out = _merge_pe_pb(base, fin)
+    assert "pe_ttm" not in out
+    assert out["pb"] == 10.0
