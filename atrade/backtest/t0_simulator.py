@@ -341,8 +341,9 @@ class T0Simulator:
                 pos.lock_until_date = ""
 
             # 5. 跟踪净值
+            # 持仓市值 + 累计已实现的 T 盈亏（更准确反映"清仓价值"）
             portfolio_values.append(
-                (today, (pos.base + pos.t_holdings) * cur_close)
+                (today, (pos.base + pos.t_holdings) * cur_close + total_profit_gross - fee_total)
             )
 
         # ---------- 汇总 ----------
