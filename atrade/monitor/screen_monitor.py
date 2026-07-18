@@ -7,7 +7,7 @@ from typing import Optional
 
 from loguru import logger
 
-from scripts.screen import fetch_market_snapshot, filter_by_thresholds, load_snapshot
+from scripts.screen import fetch_market_snapshot, filter_screen_candidates, load_snapshot
 
 
 @dataclass
@@ -51,13 +51,7 @@ class ScreenMonitorRunner:
                 amount_min = self.config.amount_min
                 code_in = ",".join(self.config.code_in) if self.config.code_in else None
 
-            if any([
-                self.config.pct_chg_min is not None,
-                self.config.pct_chg_max is not None,
-                self.config.amount_min is not None,
-                self.config.code_in,
-            ]):
-                df = filter_by_thresholds(df, _Args)
+            df = filter_screen_candidates(df, _Args)
 
             if df.empty:
                 return ""

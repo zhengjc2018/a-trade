@@ -23,6 +23,7 @@ import argparse
 import json
 import sys
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,9 @@ from loguru import logger
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from atrade.data import HistoryProvider, fetch_snap
+from atrade.indicators import add_all_indicators
+
 
 SNAPSHOT_DIR = Path(__file__).resolve().parents[1] / "data" / "cache"
 SNAPSHOT_FILE = SNAPSHOT_DIR / "market_snapshot.csv"
@@ -40,6 +44,11 @@ CLIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 
 # FS 过滤器：沪深京主板（不含科创板/北交所）
 FS_BOARD = "m:1+t:2+t:23+t:1+t:0+f:!2+m:0+t:6+f:!2"
+MAIN_BOARD_PREFIXES = ("000", "001", "002", "600", "601", "603", "605")
+EXCLUDED_INDUSTRIES = {"房地产", "白酒", "教育", "医疗", "医药", "证券", "银行"}
+MAX_PRICE = 80.0
+MAX_PE_TTM = 35.0
+MAX_PB = 5.0
 
 # 字段 f1=最新价 ×100 / f2=涨跌幅% / f5=成交额 / f12=code / f14=name / f20=总市值
 FIELDS = "f1,f2,f3,f4,f5,f6,f9,f12,f14,f15,f20,f23"
@@ -110,6 +119,146 @@ def load_snapshot() -> pd.DataFrame:
     return pd.read_csv(SNAPSHOT_FILE, dtype={"code": str})
 
 
+def _safe_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def is_main_board_code(code: str) -> bool:
+    code = str(code).zfill(6)
+    return code.startswith(MAIN_BOARD_PREFIXES)
+
+
+def is_st_name(name: str) -> bool:
+    s = str(name or "").upper().strip()
+    return s.startswith("ST") or s.startswith("*ST") or "ST" in s
+
+
+@lru_cache(maxsize=2048)
+def fetch_stock_profile(code: str) -> dict:
+    """拉个股基础资料，用于行业/ST 过滤。"""
+    code = str(code).zfill(6)
+    try:
+        df = __import__("akshare").stock_individual_info_em(symbol=code)
+        if df is None or len(df) == 0:
+            return {}
+        if {"item", "value"}.issubset(df.columns):
+            out = {str(r["item"]): r["value"] for _, r in df.iterrows()}
+        else:
+            cols = list(df.columns)
+            if len(cols) >= 2:
+                out = {str(r.iloc[0]): r.iloc[1] for _, r in df.iterrows()}
+            else:
+                out = {}
+        return out
+    except Exception as e:
+        logger.debug(f"拉取个股资料失败 {code}: {e}")
+        return {}
+
+
+@lru_cache(maxsize=2048)
+def fetch_fundamental_snapshot(code: str) -> dict:
+    """拉取单股基本面快照，补齐 PE/PB。"""
+    try:
+        snap = fetch_snap(code)
+        return snap or {}
+    except Exception as e:
+        logger.debug(f"拉取基本面快照失败 {code}: {e}")
+        return {}
+
+
+def is_excluded_industry(code: str) -> bool:
+    profile = fetch_stock_profile(code)
+    industry = str(
+        profile.get("所属行业")
+        or profile.get("行业")
+        or profile.get("行业分类")
+        or profile.get("主营业务")
+        or ""
+    ).strip()
+    return any(bad in industry for bad in EXCLUDED_INDUSTRIES)
+
+
+def has_good_fundamentals(code: str, row: pd.Series) -> bool:
+    pe = _safe_float(row.get("pe_ttm"))
+    pb = _safe_float(row.get("pb"))
+    if pe is None or pb is None:
+        snap = fetch_fundamental_snapshot(code)
+        if pe is None:
+            pe = _safe_float(snap.get("pe_ttm"))
+        if pb is None:
+            pb = _safe_float(snap.get("pb"))
+    if pe is None or pb is None:
+        return False
+    if pe <= 0 or pe > MAX_PE_TTM:
+        return False
+    if pb <= 0 or pb > MAX_PB:
+        return False
+    return True
+
+
+def close_above_ma5(code: str, current_price: float, history: Optional[HistoryProvider] = None) -> bool:
+    if current_price is None:
+        return False
+    hp = history or HistoryProvider()
+    try:
+        hist = hp.fetch_with_cache(code, scale="1d", datalen=20, use_snapshot=False)
+        if hist is None or hist.empty or len(hist) < 5:
+            return False
+        hist = add_all_indicators(hist)
+        ma5 = hist["MA5"].iloc[-1]
+        if pd.isna(ma5):
+            return False
+        return float(current_price) > float(ma5)
+    except Exception as e:
+        logger.debug(f"{code} MA5 判断失败: {e}")
+        return False
+
+
+def apply_quality_filters(
+    df: pd.DataFrame,
+    history: Optional[HistoryProvider] = None,
+) -> pd.DataFrame:
+    """按个股质量条件筛选。"""
+    if df.empty:
+        return df
+
+    hp = history or HistoryProvider()
+    rows = []
+    for _, row in df.iterrows():
+        code = str(row.get("code", "")).zfill(6)
+        if not is_main_board_code(code):
+            continue
+        if is_st_name(str(row.get("name", ""))):
+            continue
+        price = _safe_float(row.get("price"))
+        if price is None:
+            continue
+        price = price / 100.0
+        if price > MAX_PRICE:
+            continue
+        if is_excluded_industry(code):
+            continue
+        if not has_good_fundamentals(code, row):
+            continue
+        if not close_above_ma5(code, price, hp):
+            continue
+        rows.append(row)
+
+    if not rows:
+        return df.iloc[0:0].copy()
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+
 def filter_by_thresholds(df: pd.DataFrame, args) -> pd.DataFrame:
     out = df.copy()
     if args.pct_chg_min is not None:
@@ -121,6 +270,13 @@ def filter_by_thresholds(df: pd.DataFrame, args) -> pd.DataFrame:
     if args.code_in:
         codes = [c.strip() for c in args.code_in.split(",")]
         out = out[out["code"].isin(codes)]
+    return out
+
+
+def filter_screen_candidates(df: pd.DataFrame, args, history: Optional[HistoryProvider] = None) -> pd.DataFrame:
+    """先做阈值筛，再做质量筛。"""
+    out = filter_by_thresholds(df, args)
+    out = apply_quality_filters(out, history=history)
     return out
 
 
@@ -183,14 +339,15 @@ def main():
             return
         # 用阈值过滤 + code-in
         if args.pct_chg_min is not None or args.pct_chg_max is not None or args.amount_min is not None:
-            df = filter_by_thresholds(df, args)
+            df = filter_screen_candidates(df, args)
         else:
             df = df[df["code"].isin(symbols)]
+            df = apply_quality_filters(df)
     elif any([args.pct_chg_min, args.pct_chg_max, args.amount_min]):
         df = load_snapshot()
         if df.empty:
             return
-        df = filter_by_thresholds(df, args)
+        df = filter_screen_candidates(df, args)
     else:
         parser.print_help()
         return

@@ -84,3 +84,36 @@ def test_filter_combined(fake_snapshot, monkeypatch):
     # 跌 1-5% 内：600519(-2.5) 和 000001(-4.0)
     # 成交 ≥5亿：000001（10.8 亿），600519（1.25 亿不满足）
     assert codes == {"000001"}
+
+
+def test_apply_quality_filters_uses_fundamental_snapshot(monkeypatch):
+    df = pd.DataFrame([
+        {"code": "600123", "name": "某主板股", "price": 1200, "pe_ttm": None, "pb": None},
+    ])
+    monkeypatch.setattr(s, "is_main_board_code", lambda code: True)
+    monkeypatch.setattr(s, "is_st_name", lambda name: False)
+    monkeypatch.setattr(s, "is_excluded_industry", lambda code: False)
+    monkeypatch.setattr(s, "close_above_ma5", lambda code, price, history=None: True)
+    monkeypatch.setattr(
+        s,
+        "fetch_fundamental_snapshot",
+        lambda code: {"pe_ttm": 18.0, "pb": 2.2},
+    )
+
+    out = s.apply_quality_filters(df)
+    assert len(out) == 1
+    assert out.iloc[0]["code"] == "600123"
+
+
+def test_apply_quality_filters_rejects_bad_fundamentals(monkeypatch):
+    df = pd.DataFrame([
+        {"code": "600124", "name": "某主板股", "price": 1200, "pe_ttm": 80.0, "pb": 2.2},
+    ])
+    monkeypatch.setattr(s, "is_main_board_code", lambda code: True)
+    monkeypatch.setattr(s, "is_st_name", lambda name: False)
+    monkeypatch.setattr(s, "is_excluded_industry", lambda code: False)
+    monkeypatch.setattr(s, "close_above_ma5", lambda code, price, history=None: True)
+    monkeypatch.setattr(s, "fetch_fundamental_snapshot", lambda code: {})
+
+    out = s.apply_quality_filters(df)
+    assert out.empty
