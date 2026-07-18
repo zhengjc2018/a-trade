@@ -1,0 +1,8 @@
+apscheduler
+botpy
+loguru
+numpy
+pandas
+python-dotenv
+requests
+websockets
