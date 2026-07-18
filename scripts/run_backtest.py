@@ -42,8 +42,10 @@ def print_console(results):
           f"{'胜率':>8} {'最大回撤':>10} {'年化':>10} {'vs 死拿':>10}")
     print("-" * 80)
     for r in results:
-        denom = max(r.initial_cost * 1000, 1)
-        vs = r.net_t_profit / denom * 100 + r.buy_hold_profit
+        # vs 死拿 = T 净额相对持仓成本 + 死拿涨跌
+        # denom = cost_price * quantity（持仓建仓成本）
+        position_cost = max(r.initial_cost * max(r.quantity, 1), 1)
+        vs = r.net_t_profit / position_cost * 100 + r.buy_hold_profit
         print(
             f"{r.symbol:<8} {r.start_date}~{r.end_date:<10} "
             f"{r.cost_change:>+9.2f}% {r.net_t_profit:>+11.2f} "

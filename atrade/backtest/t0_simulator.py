@@ -79,6 +79,7 @@ class T0BacktestResult:
     annualized_return: float      # 年化收益率 %
     t_position_max: int           # T 仓峰值
     t1_locks_held: int            # 累计 T+1 锁仓次数
+    quantity: int = 0              # 初始持仓股数
     trades: list[T0Trade] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -363,6 +364,7 @@ class T0Simulator:
             end_date=df_ind.iloc[-1]["date"],
             initial_cost=cost_price,
             final_cost=new_cost,
+            quantity=quantity,
             cost_change=cost_change_pct,
             total_t_profit=total_profit_gross,
             net_t_profit=net_t_profit,

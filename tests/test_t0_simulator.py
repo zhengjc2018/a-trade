@@ -103,6 +103,7 @@ def test_run_with_no_signals_returns_zero_t_profit():
     assert r.t_loss_count == 0
     assert r.fee_total == 0.0
     assert r.buy_hold_profit == 0.0  # 平稳，价格不变
+    assert r.quantity == 1000  # 入参原样传出
 
 
 def test_run_calculates_max_drawdown():
