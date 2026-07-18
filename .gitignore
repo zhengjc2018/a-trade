@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+data/cache/*.db
+data/cache/*.db-*
+data/*.csv
+data/*.parquet
+logs/*.log
+reports/*.md
+.DS_Store
+*.swp
+.superpowers/
+botpy.log
