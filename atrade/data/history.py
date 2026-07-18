@@ -115,6 +115,19 @@ class HistoryProvider:
             （pe_ttm, pb, float_mv, total_mv, float_share, total_share）。
         """
         symbol = str(symbol).zfill(6)
+
+        # 5 分钟 / 15 分钟等日内数据无法直接落到日线 cache 的主键模型里，
+        # 这里走“直接拉取 + 派生字段”路径，不写入 SQLite。
+        if scale != "1d":
+            raw = self.fetch(symbol, scale=scale, datalen=datalen)
+            if raw.empty:
+                return raw
+            raw = raw.copy()
+            raw["code"] = symbol
+            raw["ah_factor"] = 1.0
+            df = _add_derived_fields(raw)
+            return df.tail(datalen).reset_index(drop=True)
+
         cached_count = self.cache.count(symbol)
 
         # 1. cache 命中足够，直接走 cache

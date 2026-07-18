@@ -91,6 +91,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$APP_DIR
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=$APP_DIR
 ExecStart=$VENV_DIR/bin/python $APP_DIR/scripts/run_scheduler.py
 Restart=always
 RestartSec=10

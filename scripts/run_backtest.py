@@ -26,6 +26,8 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 def run_one(symbol: str, cost: float, qty: int, args) -> T0BacktestResult:
     sim = T0Simulator(
+        scale=args.scale,
+        datalen=args.datalen,
         t_position_pct=args.t_position_pct,
         fee_commission=args.fee_commission,
         fee_stamp_duty_sell=args.fee_stamp_duty_sell,
@@ -75,6 +77,11 @@ def main():
     parser.add_argument("--start", default="2024-01-01")
     parser.add_argument("--end",
                         default=datetime.now().strftime("%Y-%m-%d"))
+    parser.add_argument("--scale", default="1d",
+                        choices=["1d", "5m", "15m", "30m", "60m"],
+                        help="回测周期")
+    parser.add_argument("--datalen", type=int, default=600,
+                        help="拉取 K 线根数")
     parser.add_argument("--t-position-pct", type=float, default=0.5)
     parser.add_argument("--fee-commission", type=float, default=0.00025)
     parser.add_argument("--fee-stamp-duty-sell", type=float, default=0.001)

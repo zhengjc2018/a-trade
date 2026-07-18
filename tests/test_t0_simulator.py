@@ -106,6 +106,27 @@ def test_run_with_no_signals_returns_zero_t_profit():
     assert r.quantity == 1000  # 入参原样传出
 
 
+def test_run_supports_intraday_5m_scale():
+    """5 分钟模式应通过 scale 参数进入日内数据路径。"""
+    sim = T0Simulator(scale="5m", datalen=20)
+    df = make_flat_df(60)
+    with patch.object(sim.history, "fetch_with_cache", return_value=df), \
+         patch("atrade.indicators.indicators.add_all_indicators",
+               side_effect=lambda d: d.assign(**{
+                   "MA5": d["close"], "MA10": d["close"], "MA20": d["close"],
+                   "VOL_MA5": d["volume"],
+                   "RSI6": 50.0, "RSI12": 50.0,
+                   "BOLL_LOWER": d["close"] * 0.98,
+                   "BOLL_UPPER": d["close"] * 1.02,
+                   "MACD_HIST": 0.0,
+                   "KDJ_K": 50.0, "KDJ_D": 50.0, "KDJ_J": 50.0,
+               })):
+        r = sim.run("600519", 100.0, 1000, start_date="20260101", end_date="20260301")
+    assert r.quantity == 1000
+    assert sim.scale == "5m"
+    assert sim.datalen == 20
+
+
 def test_run_calculates_max_drawdown():
     """净值下跌应有最大回撤。"""
     sim = T0Simulator()
@@ -177,4 +198,3 @@ def test_signal_cooldown_prevents_duplicate():
     # 平静数据 0 信号 → cooldown 字典为空
     assert hasattr(sim, "signal_cooldown_days")
     assert sim.signal_cooldown_days == 3
-

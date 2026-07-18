@@ -81,6 +81,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$WORK_TREE
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=$WORK_TREE
 ExecStart=$WORK_TREE/.venv/bin/python $WORK_TREE/scripts/run_scheduler.py
 Restart=always
 RestartSec=10

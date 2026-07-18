@@ -6,9 +6,9 @@ import asyncio
 import json
 import os
 import threading
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional, Union
 
 import botpy
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -21,12 +21,14 @@ from loguru import logger
 
 from atrade.news.collector import NewsCollector
 from atrade.report.generator import ReportGenerator
+from atrade.monitor import TradingCalendar, ScreenMonitorRunner, TMonitorRunner
 
 _log = logging.get_logger()
 load_dotenv()
 
 # 配置文件路径
 HOLDINGS_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "holdings.json"
+MONITOR_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "monitor.json"
 
 
 def load_holdings() -> list[dict]:
@@ -43,10 +45,23 @@ def load_holdings() -> list[dict]:
         return []
 
 
+def load_monitor_config() -> dict:
+    """加载统一监控配置。"""
+    if not MONITOR_FILE.exists():
+        logger.warning(f"监控配置文件不存在: {MONITOR_FILE}")
+        return {}
+    try:
+        with open(MONITOR_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"加载监控配置失败: {e}")
+        return {}
+
+
 class ATradeClient(botpy.Client):
     """a-trade 机器人 Client，挂在调度器上用于推送。"""
 
-    def __init__(self, *args, scheduler: "DailyScheduler | None" = None, **kwargs):
+    def __init__(self, *args, scheduler: Optional["DailyScheduler"] = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._scheduler = scheduler
 
@@ -75,6 +90,10 @@ class DailyScheduler:
         self.holdings = load_holdings()
         self.watch_symbols = [h.get("symbol") for h in self.holdings if h.get("symbol")]
         self.watch_keywords = self._load_keywords()
+        self.monitor_config = load_monitor_config()
+        self.calendar = TradingCalendar()
+        self.screen_runner = ScreenMonitorRunner(self.monitor_config.get("screen"))
+        self.t_runner = TMonitorRunner(self.monitor_config.get("t_monitor"))
 
         self.report_gen = ReportGenerator(
             holdings=self.holdings,
@@ -105,7 +124,7 @@ class DailyScheduler:
         # 早盘快讯：每个交易日 8:00
         self.scheduler.add_job(
             self._job_morning_brief,
-            CronTrigger(hour=8, minute=0, day_of_week="mon-fri"),
+            CronTrigger(hour=8, minute=0),
             id="morning_brief",
             name="早盘快讯",
         )
@@ -113,7 +132,7 @@ class DailyScheduler:
         # 午盘报告：每个交易日 12:30
         self.scheduler.add_job(
             self._job_noon_report,
-            CronTrigger(hour=12, minute=30, day_of_week="mon-fri"),
+            CronTrigger(hour=12, minute=30),
             id="noon_report",
             name="午盘报告",
         )
@@ -121,7 +140,7 @@ class DailyScheduler:
         # 收盘日报：每个交易日 15:30
         self.scheduler.add_job(
             self._job_closing_report,
-            CronTrigger(hour=15, minute=30, day_of_week="mon-fri"),
+            CronTrigger(hour=15, minute=30),
             id="closing_report",
             name="收盘日报",
         )
@@ -129,12 +148,28 @@ class DailyScheduler:
         # 持仓新闻汇总：每个交易日 17:00
         self.scheduler.add_job(
             self._job_holdings_news,
-            CronTrigger(hour=17, minute=0, day_of_week="mon-fri"),
+            CronTrigger(hour=17, minute=0),
             id="holdings_news",
             name="持仓新闻",
         )
 
-        logger.info("✅ 定时任务注册完成: 4 个")
+        # 盘中选股：每 N 分钟扫描一次，只在交易日盘中运行
+        self.scheduler.add_job(
+            self._job_screen_monitor,
+            CronTrigger(minute="*/{}".format(max(1, int(self.monitor_config.get("screen", {}).get("interval_minutes", 30))))),
+            id="screen_monitor",
+            name="盘中选股",
+        )
+
+        # 做 T 监控：每 N 分钟扫描一次，只在交易日盘中运行
+        self.scheduler.add_job(
+            self._job_t_monitor,
+            CronTrigger(minute="*/{}".format(max(1, int(self.monitor_config.get("t_monitor", {}).get("scan_interval_minutes", 2))))),
+            id="t_monitor",
+            name="做T监控",
+        )
+
+        logger.info("✅ 定时任务注册完成: 6 个")
 
     # ============================================================
     # 推送辅助
@@ -160,11 +195,16 @@ class DailyScheduler:
         except Exception as e:
             logger.error(f"❌ 推送失败: {e}")
 
+    def _should_run_now(self) -> bool:
+        return self.calendar.is_open_for_intraday_scan()
+
     # ============================================================
     # 定时任务
     # ============================================================
 
     def _job_morning_brief(self):
+        if not self.calendar.is_trade_day():
+            return
         logger.info("⏰ 触发: 早盘快讯")
         report = self.report_gen.generate_morning_brief()
         asyncio.run_coroutine_threadsafe(
@@ -173,6 +213,8 @@ class DailyScheduler:
         )
 
     def _job_noon_report(self):
+        if not self.calendar.is_trade_day():
+            return
         logger.info("⏰ 触发: 午盘报告")
         report = self.report_gen.generate_noon_report()
         asyncio.run_coroutine_threadsafe(
@@ -181,6 +223,8 @@ class DailyScheduler:
         )
 
     def _job_closing_report(self):
+        if not self.calendar.is_trade_day():
+            return
         logger.info("⏰ 触发: 收盘日报")
         report = self.report_gen.generate_closing_report()
         asyncio.run_coroutine_threadsafe(
@@ -189,6 +233,8 @@ class DailyScheduler:
         )
 
     def _job_holdings_news(self):
+        if not self.calendar.is_trade_day():
+            return
         logger.info("⏰ 触发: 持仓新闻汇总")
         collector = NewsCollector(
             watch_symbols=self.watch_symbols,
@@ -201,6 +247,31 @@ class DailyScheduler:
         md = "# 📰 持仓股新闻汇总\n\n" + collector.to_markdown(news, max_len=250)
         asyncio.run_coroutine_threadsafe(
             self._push_markdown("持仓新闻汇总", md),
+            self._bot_loop,
+        )
+
+    def _job_screen_monitor(self):
+        if not self.calendar.is_open_for_intraday_scan():
+            return
+        logger.info("⏰ 触发: 盘中选股")
+        md = self.screen_runner.run_once()
+        if not md:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._push_markdown("📈 a-trade 盘中选股", md),
+            self._bot_loop,
+        )
+
+    def _job_t_monitor(self):
+        if not self.calendar.is_open_for_intraday_scan():
+            return
+        logger.info("⏰ 触发: 做T监控")
+        alerts = self.t_runner.run_once()
+        if not alerts:
+            return
+        md = self.t_runner.to_markdown(alerts)
+        asyncio.run_coroutine_threadsafe(
+            self._push_markdown("🔔 a-trade 做T信号", md),
             self._bot_loop,
         )
 

@@ -1,0 +1,35 @@
+{
+  "news": {
+    "enabled": true
+  },
+  "screen": {
+    "enabled": true,
+    "interval_minutes": 30,
+    "pct_chg_min": 2,
+    "pct_chg_max": null,
+    "amount_min": 300000000,
+    "code_in": []
+  },
+  "t_monitor": {
+    "enabled": true,
+    "scan_interval_minutes": 2,
+    "scale": "5m",
+    "datalen": 120,
+    "symbols": [
+      {
+        "symbol": "600519",
+        "name": "贵州茅台",
+        "cost_price": 1650,
+        "quantity": 100,
+        "note": "满仓被套，关注涨价消息"
+      },
+      {
+        "symbol": "000001",
+        "name": "平安银行",
+        "cost_price": 12.5,
+        "quantity": 5000,
+        "note": "底仓"
+      }
+    ]
+  }
+}

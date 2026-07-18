@@ -121,6 +121,8 @@ class T0Simulator:
 
     def __init__(
         self,
+        scale: str = "1d",
+        datalen: int = 600,
         t_position_pct: float = 0.33,
         fee_commission: float = 0.00025,
         fee_stamp_duty_sell: float = 0.001,
@@ -130,6 +132,8 @@ class T0Simulator:
     ):
         self.history = HistoryProvider()
         self.engine = SignalEngine()
+        self.scale = scale
+        self.datalen = datalen
         self.t_position_pct = t_position_pct
         self.fee_commission = fee_commission
         self.fee_stamp_duty_sell = fee_stamp_duty_sell
@@ -156,6 +160,18 @@ class T0Simulator:
         d = datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)
         return d.strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _day_key(date_str: str) -> str:
+        return str(date_str)[:10]
+
+    @staticmethod
+    def _normalize_date(date_str: str) -> str:
+        """把 20260101 / 2026-01-01 都归一化成 YYYY-MM-DD。"""
+        s = str(date_str).strip()
+        if len(s) == 8 and s.isdigit():
+            return datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
+        return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%Y-%m-%d")
+
     # ---------- 主流程 ----------
     def run(
         self,
@@ -167,12 +183,19 @@ class T0Simulator:
         force_eod_close: bool = True,
     ) -> T0BacktestResult:
         """跑回测。"""
-        df = self.history.fetch_with_cache(symbol)
+        df = self.history.fetch_with_cache(symbol, scale=self.scale, datalen=self.datalen)
         if df is None or len(df) < 60:
             raise ValueError(f"{symbol} 数据不足")
 
+        start_day = self._normalize_date(start_date)
+        end_day = self._normalize_date(end_date)
+
         df["date_obj"] = pd.to_datetime(df["date"])
-        df = df[(df["date_obj"] >= start_date) & (df["date_obj"] <= end_date)].copy()
+        df["trade_day"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        df = df[
+            (df["trade_day"] >= start_day) &
+            (df["trade_day"] <= end_day)
+        ].copy()
         if len(df) < 30:
             raise ValueError(f"{symbol} 日期范围内数据不足（{len(df)} 行）")
 
@@ -192,7 +215,11 @@ class T0Simulator:
 
         for i in range(30, len(df_ind)):
             row = df_ind.iloc[i]
-            today = row["date"]
+            today = self._day_key(row["trade_day"])
+            is_last_bar_of_day = (
+                i == len(df_ind) - 1 or
+                self._day_key(df_ind.iloc[i + 1]["trade_day"]) != today
+            )
 
             # 1. 先解锁昨日买入的 T 仓
             if pos.lock_until_date and today >= pos.lock_until_date:
@@ -320,7 +347,7 @@ class T0Simulator:
                             pos.base += t_size
 
             # 4. 收盘强制平仓（T 仓）—— 仅在未被 T+1 锁仓时才平
-            if force_eod_close and pos.t_holdings > 0 and not pos.is_locked(today):
+            if force_eod_close and is_last_bar_of_day and pos.t_holdings > 0 and not pos.is_locked(today):
                 sell_price = self._slippage_sell(cur_close)
                 fee = self._calc_sell_fee(sell_price, pos.t_holdings)
                 profit = (sell_price - pos.t_avg_cost) * pos.t_holdings - fee
@@ -375,8 +402,8 @@ class T0Simulator:
 
         return T0BacktestResult(
             symbol=symbol,
-            start_date=df_ind.iloc[0]["date"],
-            end_date=df_ind.iloc[-1]["date"],
+            start_date=df_ind.iloc[0]["trade_day"],
+            end_date=df_ind.iloc[-1]["trade_day"],
             initial_cost=cost_price,
             final_cost=new_cost,
             quantity=quantity,
