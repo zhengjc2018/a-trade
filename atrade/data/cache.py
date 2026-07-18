@@ -100,13 +100,14 @@ class LocalCache:
             )
             c.commit()
 
-    def _ensure_columns(self, cursor, table: str, columns: dict[str, str]):
-        cursor.execute(f"PRAGMA table_info({table})")
-        existing = {row[1] for row in cursor.fetchall()}
+    def _ensure_columns(self, conn, table: str, columns: dict[str, str]):
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cur.fetchall()}
         for col, sqltype in columns.items():
             if col not in existing:
-                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {sqltype}")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {sqltype}")
                 logger.debug(f"[cache] ALTER {table} ADD COLUMN {col} {sqltype}")
+        conn.commit()
 
     def upsert_daily(self, df: pd.DataFrame) -> int:
         """Upsert 日 K 数据。df 至少有 date/open/high/low/close/volume/code。"""
@@ -117,10 +118,33 @@ class LocalCache:
 
         with self._conn() as c:
             self._ensure_columns(c, "daily", SCHEMA_DAILY)
+            # 动态扩列：df 中出现的非白名单字段也按各自 dtype 加列
+            extra = {}
+            for col in df.columns:
+                if col in SCHEMA_DAILY:
+                    continue
+                sample = df[col].dropna()
+                if len(sample) == 0:
+                    continue
+                v = sample.iloc[0]
+                if isinstance(v, bool):
+                    extra[col] = "INTEGER"
+                elif isinstance(v, int):
+                    extra[col] = "INTEGER"
+                elif isinstance(v, float):
+                    extra[col] = "REAL"
+                else:
+                    extra[col] = "TEXT"
+            if extra:
+                self._ensure_columns(c, "daily", extra)
+
+            all_cols = list(SCHEMA_DAILY.keys()) + list(extra.keys())
             payload = []
             for _, row in df.iterrows():
                 rec = {}
-                for col in SCHEMA_DAILY:
+                for col in all_cols:
+                    if col not in df.columns:
+                        continue
                     v = row.get(col)
                     if v is None or (isinstance(v, float) and pd.isna(v)):
                         rec[col] = None
@@ -128,13 +152,13 @@ class LocalCache:
                         rec[col] = v
                 payload.append(rec)
 
-            cols = list(SCHEMA_DAILY.keys())
+            cols = all_cols
             placeholders = ",".join(["?"] * len(cols))
             col_list = ",".join(cols)
             sql = (
                 f"INSERT OR REPLACE INTO daily ({col_list}) VALUES ({placeholders})"
             )
-            c.executemany(sql, [[r[c] for c in cols] for r in payload])
+            c.executemany(sql, [[r[c] for c in cols] if all(c in r for c in cols) else [r.get(c) for c in cols] for r in payload])
             c.commit()
             logger.info(f"[cache] upsert daily {df['code'].iloc[0]} {len(df)} 行")
             return len(payload)
