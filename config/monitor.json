@@ -29,6 +29,13 @@
         "cost_price": 12.5,
         "quantity": 5000,
         "note": "底仓"
+      },
+      {
+        "symbol": "601899",
+        "name": "紫金矿业",
+        "cost_price": 0,
+        "quantity": 0,
+        "note": "新增做T监控"
       }
     ]
   }
