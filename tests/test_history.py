@@ -161,7 +161,8 @@ def test_fetch_snap_datacenter_derives_pe_pb():
         "total_mv": None, "float_mv": None,
         "total_share": 1252270215, "float_share": None,
         "pe_ttm": None, "pb": None,
-        "bvps": 224.50, "ttm_eps": 66.04, "source": "datacenter",
+        "bvps": 216.32, "ttm_eps": 66.04, "parent_equity": 270894035676.27,
+        "source": "datacenter",
     }
     from unittest.mock import patch
     with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=fake_em), \
@@ -172,11 +173,12 @@ def test_fetch_snap_datacenter_derives_pe_pb():
     assert snap is not None
     # PE = 1253 / 66.04 = 18.97
     assert abs(snap["pe_ttm"] - 18.97) < 0.1
-    # PB = 1253 / 224.50 = 5.58
-    assert abs(snap["pb"] - 5.58) < 0.1
-    assert snap["bvps"] == 224.50
+    # PB = 1253 / 216.32 = 5.79（用归母权益，更接近腾讯 PB 6.73）
+    assert abs(snap["pb"] - 5.79) < 0.1
+    assert snap["bvps"] == 216.32
     assert snap["ttm_eps"] == 66.04
     assert snap["total_share"] == 1252270215
+    assert snap["parent_equity"] == 270894035676.27
     assert snap["source"] == "tx+datacenter"
 
 
@@ -277,3 +279,56 @@ def test_merge_pe_pb_negative_eps_skipped():
     out = _merge_pe_pb(base, fin)
     assert "pe_ttm" not in out
     assert out["pb"] == 10.0
+
+
+def test_fetch_snap_gbalance_fails_falls_back_to_mainfinadata():
+    """datacenter GBALANCE 限速拿不到时, 应降级到 MAINFINADATA.TOTAL_EQUITY_PK（含少股）。"""
+    from unittest.mock import patch
+    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx, _fetch_datacenter
+
+    fake_em = None
+    fake_tx = {
+        "code": "000001", "name": "平安银行", "price": 10.78,
+        "pre_close": 10.77, "open": 10.80, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": 0.55,
+        "total_mv": 2.09e11, "float_mv": 2.09e11,
+        "total_share": None, "float_share": None,
+        "pe_ttm": None, "pb": None, "source": "tx",
+    }
+    # GBALANCE 限速，MAINFINADATA fallback
+    fake_dc = {
+        "code": "000001", "name": None, "price": None,
+        "pre_close": None, "open": None, "pct_chg": None,
+        "amplitude": None, "vol_ratio": None, "turnover": None,
+        "total_mv": None, "float_mv": None,
+        "total_share": 19405918198, "float_share": None,
+        "pe_ttm": None, "pb": None,
+        # 含少股权益 fallback（GBALANCE 限速）
+        "bvps": 28.04, "ttm_eps": 2.12, "parent_equity": 544083000000,
+        "source": "datacenter",
+    }
+    with patch("atrade.data.eastmoney._fetch_eastmoney", return_value=fake_em), \
+         patch("atrade.data.eastmoney._fetch_tx", return_value=fake_tx), \
+         patch("atrade.data.eastmoney._fetch_datacenter", return_value=fake_dc):
+        snap = fetch_snap("000001")
+    assert snap is not None
+    assert snap["bvps"] == 28.04
+    assert snap["ttm_eps"] == 2.12
+    assert snap["parent_equity"] == 544083000000
+    # PE = 10.78 / 2.12 = 5.08
+    assert abs(snap["pe_ttm"] - 5.08) < 0.1
+    # PB = 10.78 / 28.04 = 0.38
+    assert abs(snap["pb"] - 0.38) < 0.1
+
+
+def test_calc_ttm_eps_cross_year_no_prev_q1():
+    """跨年但找不到 prev_q1 时, 退化为用最新年报。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.76, "REPORT_DATE": "2026-03-31"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+        # 没有 2025 一季报
+        {"REPORT_TYPE": "三季报", "EPSJB": 51.53, "REPORT_DATE": "2025-09-30"},
+    ]
+    # 找不到 prev_q1 → 直接用 latest_annual
+    assert _calc_ttm_eps(rows) == 65.66

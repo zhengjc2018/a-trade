@@ -140,47 +140,71 @@ _URL_DATACENTER = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 def _fetch_datacenter(code: str, retries: int = 2) -> Optional[dict]:
     """东财 datacenter 财报接口：反推 TTM EPS / BVPS / 总股本。
 
-    报表 RPT_F10_FINANCE_MAINFINADATA 字段：
-    - EPSJB: 基本 EPS（季报=单季，年报=全年）
-    - TOTAL_SHARE: 总股本（股）
-    - TOTAL_EQUITY_PK: 归母股东权益（元）
-    - REPORT_TYPE: 一季报/中报/三季报/年报
+    拉 2 张表：
+    1. RPT_F10_FINANCE_MAINFINADATA：EPSJB / TOTAL_SHARE / REPORT_TYPE
+       （TOTAL_EQUITY_PK 字段虽然名字带"PK"，实际值是含少股权益的总权益）
+    2. RPT_F10_FINANCE_GBALANCE：TOTAL_PARENT_EQUITY（真正归母权益）
+       - 若 GBALANCE 失败（datacenter 限速），降级用 MAINFINADATA.TOTAL_EQUITY_PK
 
     计算：
-    - BVPS = TOTAL_EQUITY_PK / TOTAL_SHARE（最新一期）
+    - BVPS = TOTAL_PARENT_EQUITY / SHARE_CAPITAL（GBALANCE 优先, fallback 含少股）
     - TTM EPS：
         * 最新一期是年报 → 直接用 EPSJB
         * 最新一期是季报且本年已发布年报 → 退化为直接用最新年报
         * 最新一期是季报且本年尚未发布年报 → TTM = 上一年年报 + 本年Q1 - 上一年Q1
     """
-    params = {
-        "reportName": "RPT_F10_FINANCE_MAINFINADATA",
-        "columns": "SECUCODE,REPORT_DATE,REPORT_TYPE,EPSJB,TOTAL_SHARE,TOTAL_EQUITY_PK",
-        "filter": f'(SECURITY_CODE="{code}")',
-        "pageNumber": "1",
-        "pageSize": "8",
-        "sortColumns": "REPORT_DATE",
-        "sortTypes": "-1",
-        "source": "HSF10",
-    }
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://emweb.securities.eastmoney.com/",
     }
+
+    def _get(report_name: str, columns: str, page_size: str) -> list:
+        p = {
+            "reportName": report_name,
+            "columns": columns,
+            "filter": f'(SECURITY_CODE="{code}")',
+            "pageNumber": "1",
+            "pageSize": page_size,
+            "sortColumns": "REPORT_DATE",
+            "sortTypes": "-1",
+            "source": "HSF10",
+        }
+        time.sleep(0.5)  # datacenter 限速保护
+        rr = requests.get(_URL_DATACENTER, params=p, headers=headers, timeout=10)
+        rr.raise_for_status()
+        return (rr.json().get("result") or {}).get("data") or []
+
+    last_err = None
     for attempt in range(retries):
         try:
-            r = requests.get(_URL_DATACENTER, params=params, headers=headers,
-                             timeout=10)
-            r.raise_for_status()
-            rows = (r.json().get("result") or {}).get("data") or []
+            # 1. MAINFINADATA 拿 EPS / 总股本 / 报表类型
+            rows = _get(
+                "RPT_F10_FINANCE_MAINFINADATA",
+                "SECUCODE,REPORT_DATE,REPORT_TYPE,EPSJB,TOTAL_SHARE,TOTAL_EQUITY_PK",
+                "8",
+            )
             if not rows:
-                return None
+                last_err = "MAINFINADATA empty"
+                time.sleep(2 + attempt * 3)
+                continue
             latest = rows[0]
             total_share = latest.get("TOTAL_SHARE")
-            equity = latest.get("TOTAL_EQUITY_PK")
-            bvps = (equity / total_share) if (equity and total_share) else None
-
             ttm_eps = _calc_ttm_eps(rows)
+
+            # 2. GBALANCE 拿真归母权益（资产负债表）。失败则降级用
+            #    MAINFINADATA.TOTAL_EQUITY_PK（含少股但至少有数据）
+            bal_rows = _get(
+                "RPT_F10_FINANCE_GBALANCE",
+                "SECUCODE,REPORT_DATE,SHARE_CAPITAL,TOTAL_PARENT_EQUITY",
+                "2",
+            )
+            parent_eq = None
+            if bal_rows:
+                parent_eq = bal_rows[0].get("TOTAL_PARENT_EQUITY")
+            if parent_eq is None:
+                parent_eq = latest.get("TOTAL_EQUITY_PK")  # 含少股权益 fallback
+            share = total_share
+            bvps = (parent_eq / share) if (parent_eq and share) else None
             return {
                 "code": code,
                 "name": None,
@@ -193,17 +217,19 @@ def _fetch_datacenter(code: str, retries: int = 2) -> Optional[dict]:
                 "turnover": None,
                 "total_mv": None,
                 "float_mv": None,
-                "total_share": total_share,
+                "total_share": share,
                 "float_share": None,
                 "pe_ttm": None,        # 需要价格才能算
                 "pb": None,
                 "bvps": bvps,
                 "ttm_eps": ttm_eps,
+                "parent_equity": parent_eq,
                 "source": "datacenter",
             }
         except Exception as e:
+            last_err = str(e)
             logger.warning(f"[datacenter] {code} 重试 {attempt+1}/{retries}: {e}")
-            time.sleep(1 + attempt)
+            time.sleep(2 + attempt * 3)
     return None
 
 
@@ -265,6 +291,8 @@ def _merge_pe_pb(base: dict, fin: dict) -> dict:
         base["ttm_eps"] = fin["ttm_eps"]
     if fin.get("total_share") is not None and not base.get("total_share"):
         base["total_share"] = fin["total_share"]
+    if fin.get("parent_equity") is not None:
+        base["parent_equity"] = fin["parent_equity"]
     base["source"] = (base.get("source") or "") + "+datacenter"
     return base
 
