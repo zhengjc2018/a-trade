@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Iterable
 
 from loguru import logger
 
@@ -38,7 +37,7 @@ class ReportGenerator:
     def generate_closing_report(self) -> str:
         now = datetime.now()
         lines = [
-            f"# 📊 a-trade 收盘日报",
+            "# 📊 a-trade 收盘日报",
             f"_{now.strftime('%Y-%m-%d %H:%M')}_",
             "",
         ]
@@ -81,7 +80,7 @@ class ReportGenerator:
     def generate_morning_brief(self) -> str:
         now = datetime.now()
         lines = [
-            f"# 🌅 a-trade 早盘快讯",
+            "# 🌅 a-trade 早盘快讯",
             f"_{now.strftime('%Y-%m-%d %H:%M')}_",
             "",
         ]
@@ -101,7 +100,7 @@ class ReportGenerator:
     def generate_noon_report(self) -> str:
         now = datetime.now()
         lines = [
-            f"# ☀️ a-trade 午盘报告",
+            "# ☀️ a-trade 午盘报告",
             f"_{now.strftime('%Y-%m-%d %H:%M')}_",
             "",
         ]

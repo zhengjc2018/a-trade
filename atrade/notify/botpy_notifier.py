@@ -15,7 +15,7 @@ from typing import Optional
 
 import botpy
 from botpy import logging
-from botpy.message import GroupMessage, Message
+from botpy.message import GroupMessage
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -55,7 +55,7 @@ class AtBotClient(botpy.Client):
                 group_openid=message.group_openid,
                 msg_type=0,
                 msg_id=message.id,
-                content=f"✅ a-trade 已收到 @\n\n（命令路由待实现）",
+                content="✅ a-trade 已收到 @\n\n（命令路由待实现）",
             )
         except Exception as e:
             logger.error(f"被动回复失败: {e}")
@@ -146,3 +146,27 @@ class BotpyNotifier:
         )
         logger.success(f"Markdown 已发送: id={result.get('id')}")
         return result
+
+
+
+class BotpyGroupNotifier(BotpyNotifier):
+    """BotpyNotifier 的简化包装：使用 .env 中的 QQ_TARGET_GROUP 作为默认目标。
+
+    适配 Notifier 抽象（send_text / send_markdown 不带 group_openid）。
+    """
+
+    def __init__(self, *args, target_group: Optional[str] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        import os as _os
+
+        from dotenv import load_dotenv
+        load_dotenv()
+        self._group = target_group or _os.getenv("QQ_TARGET_GROUP")
+        if not self._group or self._group.startswith("your_"):
+            raise ValueError("未配置 QQ_TARGET_GROUP，无法用 BotpyNotifier 推送")
+
+    async def send_text(self, content: str) -> dict:
+        return await self.send_group_text(self._group, content)
+
+    async def send_markdown(self, content: str) -> dict:
+        return await self.send_group_markdown(self._group, content)

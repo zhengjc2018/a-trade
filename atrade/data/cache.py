@@ -26,7 +26,6 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
-
 _DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "cache" / "stock.db"
 
 

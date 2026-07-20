@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -92,8 +91,8 @@ def main():
 
     targets = []
     if args.portfolio:
-        cfg_path = Path(__file__).resolve().parents[1] / "config" / "holdings.json"
-        holdings = json.loads(cfg_path.read_text())["holdings"]
+        from atrade.config import load_holdings
+        holdings = load_holdings()
         for h in holdings:
             targets.append((h["symbol"], h["cost_price"], h["quantity"]))
     elif args.symbol:
@@ -114,15 +113,11 @@ def main():
 
     if args.push:
         try:
-            from atrade.notify.botpy_notifier import BotpyNotifier
-            import asyncio
-
-            async def _send():
-                async with BotpyNotifier() as notifier:
-                    for r in results:
-                        msg = r.summary()[:2500]
-                        await notifier.send_markdown(msg)
-            asyncio.run(_send())
+            from atrade.notify import load_notifier, split_markdown_by_bytes
+            notifier = load_notifier(preferred="openclaw")
+            for r in results:
+                for chunk in split_markdown_by_bytes(r.summary(), max_bytes=3500):
+                    notifier.send_markdown(chunk)
         except Exception as e:
             print(f"⚠️ 推送失败: {e}", file=sys.stderr)
 

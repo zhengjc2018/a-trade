@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, date, time
+from datetime import date, datetime, time
 from functools import lru_cache
 from typing import Optional
 
 import akshare as ak
 from loguru import logger
-
 
 MORNING_START = time(9, 30)
 MORNING_END = time(11, 30)

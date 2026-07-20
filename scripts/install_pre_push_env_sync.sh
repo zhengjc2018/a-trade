@@ -2,7 +2,7 @@
 # 安装 Git pre-push hook，用于同步本地 .env 到 VPS
 #
 # 用法:
-#   bash scripts/install_pre_push_env_sync.sh root@96.30.194.21 /opt/a-trade/.env
+#   bash scripts/install_pre_push_env_sync.sh deploy@your-vps /opt/a-trade/.env
 #
 # 安装后:
 # - 每次 git push 前都会先 scp .env 到 VPS
@@ -18,7 +18,7 @@ REMOTE_ENV_PATH="${2:-/opt/a-trade/.env}"
 SSH_PORT="${DEPLOY_SSH_PORT:-22}"
 
 if [[ -z "$TARGET" ]]; then
-  echo "用法: bash scripts/install_pre_push_env_sync.sh root@96.30.194.21 /opt/a-trade/.env" >&2
+  echo "用法: bash scripts/install_pre_push_env_sync.sh deploy@your-vps /opt/a-trade/.env" >&2
   exit 1
 fi
 

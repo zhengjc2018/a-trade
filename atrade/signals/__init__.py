@@ -7,6 +7,6 @@
 4. 分时顶背离（高抛）
 5. 跌破止损（卖出）
 """
-from .engine import SignalEngine, Signal, SignalType, SignalStrength
+from .engine import Signal, SignalEngine, SignalStrength, SignalType
 
 __all__ = ["SignalEngine", "Signal", "SignalType", "SignalStrength"]

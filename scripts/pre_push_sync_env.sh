@@ -2,7 +2,7 @@
 # Git pre-push hook: 同步本地 .env 到 VPS，但不进入 Git 仓库
 #
 # 环境变量:
-#   DEPLOY_SSH_TARGET 例如: root@96.30.194.21
+#   DEPLOY_SSH_TARGET 例如: deploy@your-vps
 #   DEPLOY_ENV_PATH    例如: /opt/a-trade/.env
 #   DEPLOY_SSH_PORT    可选，默认 22
 #   DEPLOY_SERVICE_NAME 可选，默认 a-trade.service

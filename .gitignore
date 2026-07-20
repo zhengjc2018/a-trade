@@ -1,15 +1,25 @@
-.env
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# Local config (PII)
+.env
+config/*.local.json
+
+# Runtime
 data/cache/*.db
 data/cache/*.db-*
 data/*.csv
 data/*.parquet
 logs/*.log
 reports/*.md
+botpy.log
+
+# OS
 .DS_Store
 *.swp
+
+# Internal
 .superpowers/
-botpy.log

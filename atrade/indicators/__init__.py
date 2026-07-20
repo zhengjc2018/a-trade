@@ -7,8 +7,14 @@
 - 成交量类：VOL_MA
 """
 from .indicators import (
-    sma, ema, macd, kdj, rsi, boll, vol_ma,
     add_all_indicators,
+    boll,
+    ema,
+    kdj,
+    macd,
+    rsi,
+    sma,
+    vol_ma,
 )
 
 __all__ = [

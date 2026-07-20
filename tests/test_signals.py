@@ -1,11 +1,11 @@
-import pandas as pd
-import pytest
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from atrade.signals import SignalEngine, SignalType, SignalStrength
+from atrade.signals import SignalEngine, SignalType
 
 
 def make_df(closes: list, volumes: list = None) -> pd.DataFrame:

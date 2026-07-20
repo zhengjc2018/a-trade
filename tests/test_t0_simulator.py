@@ -1,17 +1,19 @@
+"""T0Simulator 单元测试（适配新的事件驱动账本）。"""
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
-from pathlib import Path
-import sys
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atrade.backtest.t0_simulator import (
-    T0Simulator, T0BacktestResult, T0Trade, Position,
+    Position,
+    T0Simulator,
 )
 
 
-# 60 个平稳日，价格不动
 def make_flat_df(n: int = 60, price: float = 100.0):
     dates = pd.date_range("2026-01-01", periods=n, freq="B")
     return pd.DataFrame({
@@ -24,7 +26,6 @@ def make_flat_df(n: int = 60, price: float = 100.0):
     })
 
 
-# 构造小幅波动但不触发任何信号的 df
 def make_calm_df(n: int = 60):
     import math
     dates = pd.date_range("2026-01-01", periods=n, freq="B")
@@ -39,34 +40,57 @@ def make_calm_df(n: int = 60):
     })
 
 
-# --- 单元测试 ---
-
-def test_position_is_locked():
-    pos = Position(base=1000, t_holdings=100, t_avg_cost=100.0,
-                    lock_until_date="2026-01-21")
-    # lock 到 1-21：1-20 当天锁、1-21 解锁
-    assert pos.is_locked("2026-01-20") is True
-    assert pos.is_locked("2026-01-21") is False
-    assert pos.is_locked("2026-01-22") is False
-
-
-def test_position_no_lock():
-    pos = Position(base=1000)
-    assert pos.is_locked("2026-01-01") is False
-    assert pos.is_locked("2099-01-01") is False
+def _stub_indicators(d):
+    """无信号时的指标 stub。"""
+    return d.assign(**{
+        "MA5": d["close"], "MA10": d["close"], "MA20": d["close"],
+        "VOL_MA5": d["volume"],
+        "RSI6": 50.0, "RSI12": 50.0,
+        "BOLL_LOWER": d["close"] * 0.98,
+        "BOLL_UPPER": d["close"] * 1.02,
+        "MACD_HIST": 0.0,
+        "KDJ_K": 50.0, "KDJ_D": 50.0, "KDJ_J": 50.0,
+    })
 
 
-def test_fee_calculation_buy():
-    """买入费 = price * qty * commission"""
-    sim = T0Simulator(fee_commission=0.001, slippage_pct=0.0)
+# --- Position dataclass 测试（适配新接口） ---
+
+def test_position_total_property():
+    pos = Position(target_quantity=1000, settled_quantity=600, locked_quantity=400)
+    assert pos.total == 1000
+
+
+def test_position_initial_state():
+    pos = Position(target_quantity=1000)
+    assert pos.settled_quantity == 0
+    assert pos.locked_quantity == 0
+    assert pos.cash == 0.0
+
+
+# --- 费用计算 ---
+
+def test_fee_calculation_buy_with_min_commission():
+    """买入费：max(amount*comm, min) + transfer."""
+    sim = T0Simulator(fee_commission=0.001, fee_commission_min=5.0,
+                       fee_transfer=0.0, slippage_pct=0.0)
+    # 100*1000*0.001 = 100 > 5
     assert sim._calc_buy_fee(100.0, 1000) == pytest.approx(100.0)
 
 
-def test_fee_calculation_sell():
-    """卖出费 = price * qty * (commission + stamp_duty_sell)"""
-    sim = T0Simulator(fee_commission=0.001, fee_stamp_duty_sell=0.005,
+def test_fee_calculation_buy_uses_minimum():
+    """小金额时取最低佣金 5 元。"""
+    sim = T0Simulator(fee_commission=0.001, fee_commission_min=5.0,
+                       fee_transfer=0.0, slippage_pct=0.0)
+    # 100*10*0.001 = 1.0 < 5 → 取 5
+    assert sim._calc_buy_fee(100.0, 10) == pytest.approx(5.0)
+
+
+def test_fee_calculation_sell_with_stamp_duty():
+    """卖出费：max(comm, min) + stamp + transfer。"""
+    sim = T0Simulator(fee_commission=0.001, fee_commission_min=5.0,
+                       fee_stamp_duty_sell=0.005, fee_transfer=0.0,
                        slippage_pct=0.0)
-    # 100 * 1000 * 0.006 = 600
+    # comm = max(100*1000*0.001, 5) = 100; stamp = 100*1000*0.005 = 500 → 600
     assert sim._calc_sell_fee(100.0, 1000) == pytest.approx(600.0)
 
 
@@ -81,29 +105,24 @@ def test_next_date():
     assert sim._next_date("2026-01-31") == "2026-02-01"
 
 
+# --- 集成测试 ---
+
 def test_run_with_no_signals_returns_zero_t_profit():
     """平稳数据不应触发任何做 T 信号 → T 净盈亏 = 0。"""
     sim = T0Simulator()
     df = make_flat_df(60)
-    # mock history.fetch_with_cache
     with patch.object(sim.history, "fetch_with_cache", return_value=df), \
          patch("atrade.indicators.indicators.add_all_indicators",
-               side_effect=lambda d: d.assign(**{
-                   "MA5": d["close"], "MA10": d["close"], "MA20": d["close"],
-                   "VOL_MA5": d["volume"],
-                   "RSI6": 50.0, "RSI12": 50.0,
-                   "BOLL_LOWER": d["close"] * 0.98,
-                   "BOLL_UPPER": d["close"] * 1.02,
-                   "MACD_HIST": 0.0,
-                   "KDJ_K": 50.0, "KDJ_D": 50.0, "KDJ_J": 50.0,
-               })):
+               side_effect=_stub_indicators):
         r = sim.run("600519", 100.0, 1000, start_date="20260101", end_date="20260301")
     assert r.net_t_profit == 0.0
     assert r.t_win_count == 0
     assert r.t_loss_count == 0
     assert r.fee_total == 0.0
-    assert r.buy_hold_profit == 0.0  # 平稳，价格不变
-    assert r.quantity == 1000  # 入参原样传出
+    assert r.buy_hold_profit == 0.0
+    assert r.quantity == 1000
+    # 守恒：期末总持股 == 初始 quantity
+    assert r.final_total_quantity == 1000
 
 
 def test_run_supports_intraday_5m_scale():
@@ -112,15 +131,7 @@ def test_run_supports_intraday_5m_scale():
     df = make_flat_df(60)
     with patch.object(sim.history, "fetch_with_cache", return_value=df), \
          patch("atrade.indicators.indicators.add_all_indicators",
-               side_effect=lambda d: d.assign(**{
-                   "MA5": d["close"], "MA10": d["close"], "MA20": d["close"],
-                   "VOL_MA5": d["volume"],
-                   "RSI6": 50.0, "RSI12": 50.0,
-                   "BOLL_LOWER": d["close"] * 0.98,
-                   "BOLL_UPPER": d["close"] * 1.02,
-                   "MACD_HIST": 0.0,
-                   "KDJ_K": 50.0, "KDJ_D": 50.0, "KDJ_J": 50.0,
-               })):
+               side_effect=_stub_indicators):
         r = sim.run("600519", 100.0, 1000, start_date="20260101", end_date="20260301")
     assert r.quantity == 1000
     assert sim.scale == "5m"
@@ -130,7 +141,6 @@ def test_run_supports_intraday_5m_scale():
 def test_run_calculates_max_drawdown():
     """净值下跌应有最大回撤。"""
     sim = T0Simulator()
-    # 构造前半涨后半跌但无信号的 df
     n = 60
     closes = [100.0 + i * 0.1 for i in range(30)] + [103.0 - i * 0.5 for i in range(30)]
     highs = [c + 0.5 for c in closes]
@@ -143,58 +153,13 @@ def test_run_calculates_max_drawdown():
     })
     with patch.object(sim.history, "fetch_with_cache", return_value=df), \
          patch("atrade.indicators.indicators.add_all_indicators",
-               side_effect=lambda d: d.assign(**{
-                   "MA5": d["close"], "MA10": d["close"], "MA20": d["close"],
-                   "VOL_MA5": d["volume"],
-                   "RSI6": 50.0, "RSI12": 50.0,
-                   "BOLL_LOWER": d["close"] * 0.98,
-                   "BOLL_UPPER": d["close"] * 1.02,
-                   "MACD_HIST": 0.0,
-                   "KDJ_K": 50.0, "KDJ_D": 50.0, "KDJ_J": 50.0,
-               })):
+               side_effect=_stub_indicators):
         r = sim.run("TEST", 100.0, 1000, start_date="20260101", end_date="20260301")
-    # 因为没信号触发，没做 T，但 drawdown 应被跟踪
     assert r.max_drawdown_pct >= 0.0
     assert isinstance(r.max_drawdown_pct, float)
 
 
-def test_t1_lock_prevents_same_day_sell():
-    """T 仓当天买入后 lock，次日解锁；模拟器构造一个 BUY 信号和一个同日 SELL 卖出请求，
-    SELL 应当被锁住；次日 SELL 才被允许。"""
-    sim = T0Simulator()
-    # 构造 5 行：第 1 天 BUY 触发，第 3 天 SELL 触发（应成功）
-    # 中间日期作为锁仓期
-    df = pd.DataFrame([
-        # day 0: 急跌触发 RSI 超卖
-        {"date": "2026-01-01", "open": 99, "high": 100, "low": 90, "close": 91, "volume": 1000000},
-        {"date": "2026-01-02", "open": 91, "high": 92, "low": 90, "close": 91, "volume": 1000000},
-        {"date": "2026-01-03", "open": 91, "high": 92, "low": 90, "close": 91, "volume": 1000000},
-        {"date": "2026-01-04", "open": 91, "high": 92, "low": 90, "close": 91, "volume": 1000000},
-        {"date": "2026-01-05", "open": 91, "high": 100, "low": 91, "close": 99, "volume": 2000000},
-    ])
-    # 这个 df 太短跑不动（需要 30 行），只验证 lock 字段逻辑
-    # 用 Position dataclass 直接验证
-    pos = Position(base=1000, t_holdings=500, t_avg_cost=91.0, lock_until_date="2026-01-02")
-    assert pos.is_locked("2026-01-01") is True
-    assert pos.is_locked("2026-01-02") is False
-def test_signal_cooldown_prevents_duplicate():
-    """cooldown 参数应阻止同方向信号 N 天内重复触发。"""
+def test_signal_cooldown_days_stored():
+    """cooldown 参数应被正确存储。"""
     sim = T0Simulator(signal_cooldown_days=3)
-    # 短间隔两次返回同一信号，第二次应被 skip
-    sim.history.fetch_with_cache = lambda *a, **kw: make_flat_df(60)
-    from atrade.signals import Signal, SignalType, SignalStrength
-    from unittest.mock import patch
-
-    sig = Signal(
-        symbol="600519", signal_type=SignalType.BUY,
-        strength=SignalStrength.MEDIUM, name="test_buy",
-        reason="test", trigger_price=100.0,
-    )
-    fake_signals = [sig]
-    with patch.object(sim.engine, "scan", return_value=fake_signals):
-        # 直接调 run 的内部循环不可行（私有），改：跑平静数据，0 信号，验证状态
-        # 然后通过 mock 观察 cooldown 字段被设置
-        r = sim.run("600519", 100.0, 1000, start_date="20260101", end_date="20260301")
-    # 平静数据 0 信号 → cooldown 字典为空
-    assert hasattr(sim, "signal_cooldown_days")
     assert sim.signal_cooldown_days == 3

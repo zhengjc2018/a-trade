@@ -29,7 +29,6 @@ from typing import Optional
 import requests
 from loguru import logger
 
-
 # ---------- 东财 push2 ----------
 _URL_EASTMONEY = "https://push2.eastmoney.com/api/qt/stock/get"
 
@@ -174,7 +173,6 @@ def _fetch_datacenter(code: str, retries: int = 2) -> Optional[dict]:
         rr.raise_for_status()
         return (rr.json().get("result") or {}).get("data") or []
 
-    last_err = None
     for attempt in range(retries):
         try:
             # 1. MAINFINADATA 拿 EPS / 总股本 / 报表类型
@@ -184,7 +182,6 @@ def _fetch_datacenter(code: str, retries: int = 2) -> Optional[dict]:
                 "8",
             )
             if not rows:
-                last_err = "MAINFINADATA empty"
                 time.sleep(2 + attempt * 3)
                 continue
             latest = rows[0]
@@ -227,7 +224,6 @@ def _fetch_datacenter(code: str, retries: int = 2) -> Optional[dict]:
                 "source": "datacenter",
             }
         except Exception as e:
-            last_err = str(e)
             logger.warning(f"[datacenter] {code} 重试 {attempt+1}/{retries}: {e}")
             time.sleep(2 + attempt * 3)
     return None
@@ -237,6 +233,12 @@ def _calc_ttm_eps(rows: list) -> Optional[float]:
     """根据财报 rows 算 TTM EPS。
 
     rows 已按 REPORT_DATE 倒序。REPORT_TYPE ∈ {一季报, 中报, 三季报, 年报}。
+
+    公式（EPSJB 为累计 EPS）：
+
+    - 最新年报 → 直接用年报 EPSJB（视为全年 TTM）。
+    - 最新中报 / 三季报 / 一季报（无更新年报）：
+      TTM = 上一年年报 EPSJB + 本期累计 EPSJB - 上一年同期累计 EPSJB
     """
     if not rows:
         return None
@@ -250,24 +252,32 @@ def _calc_ttm_eps(rows: list) -> Optional[float]:
     if latest_annual and not latest_q:
         return latest_annual.get("EPSJB")
     if latest_q and not latest_annual:
+        # 缺上一年度年报，只能用本期累计作为退化值。
         return latest_q.get("EPSJB")
+
     annual_year = (latest_annual.get("REPORT_DATE") or "")[:4]
     q_year = (latest_q.get("REPORT_DATE") or "")[:4]
+    q_type = latest_q.get("REPORT_TYPE")
     if annual_year == q_year:
-        # 同年的年报+季报罕见（年报刚发布，新季报还没出）
-        # 简化处理：直接用年报 EPSJB（即全年 = TTM）
+        # 同年的年报 + 季报罕见（年报刚发布，新季报还没出）。
+        # 直接用最新年报 EPSJB（即全年 = TTM）。
         return latest_annual.get("EPSJB")
-    # 跨年：TTM = 上一年年报 + 本年新季 - 上一年同季（单季）
-    prev_q1 = next(
+
+    # 跨年：寻找上一年同类型报表的累计 EPS
+    prev_same = next(
         (r for r in rows
-         if r.get("REPORT_TYPE") == "一季报"
+         if r.get("REPORT_TYPE") == q_type
          and (r.get("REPORT_DATE") or "")[:4] == annual_year),
         None,
     )
-    if prev_q1:
-        return (latest_annual["EPSJB"]
-                + (latest_q["EPSJB"] or 0)
-                - (prev_q1["EPSJB"] or 0))
+    if prev_same is not None:
+        curr_eps = latest_q.get("EPSJB") or 0.0
+        prev_eps = prev_same.get("EPSJB") or 0.0
+        return (latest_annual["EPSJB"] or 0.0) + curr_eps - prev_eps
+    # 找不到上年同期 → 退化为用最新年报 EPSJB，并记录降级
+    logger.debug(
+        f"[ttm_eps] 缺少上一年 {q_type} 累计 EPS，回退到最新年报 EPSJB"
+    )
     return latest_annual["EPSJB"]
 
 

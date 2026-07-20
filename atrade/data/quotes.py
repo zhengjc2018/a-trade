@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import requests
 from loguru import logger
@@ -67,7 +67,7 @@ class QuoteProvider:
 
     def _parse_sina_line(self, line: str) -> Quote | None:
         """解析单只股票的新浪行情。
-        
+
         数据格式：
         var hq_str_sh600519="贵州茅台,今开,昨收,现价,最高,最低,...,日期,时间,..."
         """
@@ -125,7 +125,7 @@ class QuoteProvider:
             except Exception as e:
                 logger.warning(f"新浪行情重试 {attempt+1}/3 失败: {e}")
                 time.sleep(1 + attempt)
-        logger.error(f"❌ 新浪行情 3 次重试后失败")
+        logger.error("❌ 新浪行情 3 次重试后失败")
         return {}
 
     def get(self, symbol: str) -> Quote | None:

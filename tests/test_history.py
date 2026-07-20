@@ -1,16 +1,23 @@
-import pandas as pd
-import pytest
+import sys
 from pathlib import Path
 from unittest.mock import patch
-import sys
+
+import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atrade.data import HistoryProvider
 from atrade.data.eastmoney import fetch_snap
 
-
 # 构造一份固定的 10 行 OHLCV
+
+def _recent_dates(n: int):
+    """Return n most recent business date strings ending today."""
+    import pandas as pd
+    end = pd.Timestamp.now().normalize()
+    return list(pd.bdate_range(end=end, periods=n).strftime("%Y-%m-%d"))
+
 FAKE_DF = pd.DataFrame([
     {"date": f"2026-06-{i+1:02d}", "open": 100.0 + i, "high": 105.0 + i,
      "low": 99.0 + i, "close": 102.0 + i, "volume": 1000000 + i * 1000}
@@ -43,9 +50,13 @@ def test_derived_values_basic(hp):
 
 
 def test_cache_persists_data(hp):
-    """第二次调用应走 cache，不再调用 fetch（即网络）。snap 也 mock。"""
+    """第二次调用应走 cache，不再调用 fetch（即网络）。snap 也 mock。
+
+    缓存新鲜度按"最后日期"判断，本测试中通过 mock
+    `is_cache_stale` 返回 False 模拟"刚同步到今天"的状态。
+    """
     # 准备 60 个不重复日期 + ignore_index=True 避免索引重复
-    dates = pd.date_range("2024-01-01", periods=60, freq="D").strftime("%Y-%m-%d")
+    dates = _recent_dates(60)
     big_df = pd.DataFrame({
         "date": dates,
         "open": [100.0] * 60,
@@ -55,13 +66,53 @@ def test_cache_persists_data(hp):
         "volume": [1000000] * 60,
     })
     with patch.object(hp, "fetch", return_value=big_df.copy()) as mock_fetch, \
-         patch("atrade.data.history.fetch_snap", return_value=None):
+         patch("atrade.data.history.fetch_snap", return_value=None), \
+         patch.object(hp, "is_cache_stale", return_value=False):
         df1 = hp.fetch_with_cache("600519", scale="1d", datalen=60)
         # 第二次应命中 cache，不调 fetch
         df2 = hp.fetch_with_cache("600519", scale="1d", datalen=60)
     assert mock_fetch.call_count == 1, f"fetch 被调用 {mock_fetch.call_count} 次（应只 1 次）"
     assert len(df1) == len(df2) == 60
     assert (df1["close"].values == df2["close"].values).all()
+
+
+def test_cache_stale_triggers_refetch(hp):
+    """缓存陈旧时（is_cache_stale=True）应重新拉取。"""
+    dates = _recent_dates(60)
+    big_df = pd.DataFrame({
+        "date": dates,
+        "open": [100.0] * 60,
+        "high": [105.0] * 60,
+        "low":  [99.0]  * 60,
+        "close": [102.0] * 60,
+        "volume": [1000000] * 60,
+    })
+    with patch.object(hp, "fetch", return_value=big_df.copy()) as mock_fetch, \
+         patch("atrade.data.history.fetch_snap", return_value=None), \
+         patch.object(hp, "is_cache_stale", side_effect=[True, False]):
+        # noqa: F841 — 调用用于触发 mock_count 检查
+        hp.fetch_with_cache("600519", scale="1d", datalen=60)  # noqa: F841
+        hp.fetch_with_cache("600519", scale="1d", datalen=60)  # noqa: F841
+    assert mock_fetch.call_count == 1, "陈旧缓存应触发一次 fetch"
+
+
+def test_amount_no_longer_multiplied_by_100(hp):
+    """成交额应等于 close * volume，不再 ×100。"""
+    dates = _recent_dates(10)
+    df = pd.DataFrame({
+        "date": dates,
+        "open": [10.0] * 10,
+        "high": [10.5] * 10,
+        "low":  [9.5]  * 10,
+        "close": [10.0] * 10,
+        "volume": [1_000_000] * 10,
+    })
+    with patch.object(hp, "fetch", return_value=df.copy()), \
+         patch.object(hp, "is_cache_stale", return_value=False), \
+         patch("atrade.data.history.fetch_snap", return_value=None):
+        out = hp.fetch_with_cache("600519", scale="1d", datalen=10)
+    expected = 10.0 * 1_000_000
+    assert out["amount"].iloc[-1] == pytest.approx(expected)
 
 
 def test_fetch_with_cache_pulls_snap(hp):
@@ -95,7 +146,6 @@ def test_fetch_with_cache_snap_failure_degrades(hp):
 
 def test_eastmoney_fetch_snap_returns_dict():
     """直接的 fetch_snap 调用走得通解析。"""
-    import requests
     fake_resp = {
         "data": {
             "f43": 125300, "f57": "600519", "f58": "贵州茅台",
@@ -116,7 +166,7 @@ def test_eastmoney_fetch_snap_returns_dict():
 
 def test_fetch_snap_falls_back_to_tx():
     """东财反爬时，fetch_snap 应自动 fallback 到腾讯。"""
-    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx
+    from atrade.data.eastmoney import fetch_snap
 
     fake_em = None
     fake_tx = {
@@ -143,7 +193,7 @@ def test_fetch_snap_falls_back_to_tx():
 
 def test_fetch_snap_datacenter_derives_pe_pb():
     """东财 + 腾讯都失败时, datacenter 财报接口应该能反推 PE/PB。"""
-    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx, _fetch_datacenter
+    from atrade.data.eastmoney import fetch_snap
 
     fake_em = None  # push2 反爬
     fake_tx = {
@@ -184,8 +234,9 @@ def test_fetch_snap_datacenter_derives_pe_pb():
 
 def test_fetch_snap_datacenter_fails_returns_tx_without_pe():
     """datacenter 也失败时, 返回腾讯层（PE/PB=None），不报错。"""
-    from atrade.data.eastmoney import fetch_snap
     from unittest.mock import patch
+
+    from atrade.data.eastmoney import fetch_snap
 
     fake_tx = {
         "code": "600519", "name": "贵州茅台", "price": 1253.0,
@@ -284,7 +335,8 @@ def test_merge_pe_pb_negative_eps_skipped():
 def test_fetch_snap_gbalance_fails_falls_back_to_mainfinadata():
     """datacenter GBALANCE 限速拿不到时, 应降级到 MAINFINADATA.TOTAL_EQUITY_PK（含少股）。"""
     from unittest.mock import patch
-    from atrade.data.eastmoney import fetch_snap, _fetch_eastmoney, _fetch_tx, _fetch_datacenter
+
+    from atrade.data.eastmoney import fetch_snap
 
     fake_em = None
     fake_tx = {
@@ -331,4 +383,48 @@ def test_calc_ttm_eps_cross_year_no_prev_q1():
         {"REPORT_TYPE": "三季报", "EPSJB": 51.53, "REPORT_DATE": "2025-09-30"},
     ]
     # 找不到 prev_q1 → 直接用 latest_annual
+    assert _calc_ttm_eps(rows) == 65.66
+
+
+# ---------- TTM EPS 修复（P1-3） ----------
+
+def test_calc_ttm_eps_cross_year_half_year():
+    """跨年中报：TTM = 上一年年报 + 本年中报 - 上一年中报。
+
+    与原 cross_year Q1 测试不同：必须按 REPORT_TYPE 匹配上年同期，而不是固定 Q1。
+    """
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "中报",   "EPSJB": 36.18, "REPORT_DATE": "2026-06-30"},
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.76, "REPORT_DATE": "2026-03-31"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+        {"REPORT_TYPE": "三季报", "EPSJB": 51.53, "REPORT_DATE": "2025-09-30"},
+        {"REPORT_TYPE": "中报",   "EPSJB": 30.18, "REPORT_DATE": "2025-06-30"},
+        {"REPORT_TYPE": "一季报", "EPSJB": 21.38, "REPORT_DATE": "2025-03-31"},
+    ]
+    # TTM = 65.66 + 36.18 - 30.18 = 71.66
+    assert abs(_calc_ttm_eps(rows) - 71.66) < 1e-6
+
+
+def test_calc_ttm_eps_cross_year_third_quarter():
+    """跨年三季报：TTM = 上一年年报 + 本年三季报 - 上一年三季报。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "三季报", "EPSJB": 51.53, "REPORT_DATE": "2026-09-30"},
+        {"REPORT_TYPE": "中报",   "EPSJB": 36.18, "REPORT_DATE": "2026-06-30"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+        {"REPORT_TYPE": "三季报", "EPSJB": 45.53, "REPORT_DATE": "2025-09-30"},
+    ]
+    # TTM = 65.66 + 51.53 - 45.53 = 71.66
+    assert abs(_calc_ttm_eps(rows) - 71.66) < 1e-6
+
+
+def test_calc_ttm_eps_cross_year_missing_prev_same_type():
+    """跨年但缺少上一年同类型报表 → 退化为最新年报 EPSJB。"""
+    from atrade.data.eastmoney import _calc_ttm_eps
+    rows = [
+        {"REPORT_TYPE": "中报",   "EPSJB": 36.18, "REPORT_DATE": "2026-06-30"},
+        {"REPORT_TYPE": "年报",   "EPSJB": 65.66, "REPORT_DATE": "2025-12-31"},
+        # 缺少 2025 中报
+    ]
     assert _calc_ttm_eps(rows) == 65.66

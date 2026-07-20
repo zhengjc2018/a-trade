@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import threading
-from datetime import datetime
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import botpy
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -19,49 +16,29 @@ from botpy.types.message import MarkdownPayload
 from dotenv import load_dotenv
 from loguru import logger
 
+from atrade.config import (
+    load_holdings as load_holdings_config,
+)
+from atrade.config import (
+    load_monitor_config as load_monitor_config_from_module,
+)
+from atrade.config import (
+    load_watch_keywords,
+)
+from atrade.monitor import ScreenMonitorRunner, TMonitorRunner, TradingCalendar
 from atrade.news.collector import NewsCollector
 from atrade.report.generator import ReportGenerator
-from atrade.monitor import TradingCalendar, ScreenMonitorRunner, TMonitorRunner
 
 _log = logging.get_logger()
 load_dotenv()
 
-# 配置文件路径
-HOLDINGS_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "holdings.json"
-MONITOR_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "monitor.json"
-
-
-def load_holdings() -> list[dict]:
-    """从配置文件加载持仓。"""
-    if not HOLDINGS_FILE.exists():
-        logger.warning(f"持仓文件不存在: {HOLDINGS_FILE}")
-        return []
-    try:
-        with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("holdings", [])
-    except Exception as e:
-        logger.error(f"加载持仓失败: {e}")
-        return []
-
-
-def load_monitor_config() -> dict:
-    """加载统一监控配置。"""
-    if not MONITOR_FILE.exists():
-        logger.warning(f"监控配置文件不存在: {MONITOR_FILE}")
-        return {}
-    try:
-        with open(MONITOR_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"加载监控配置失败: {e}")
-        return {}
+# 配置文件统一由 atrade.config 加载；本模块不再直接读 JSON。
 
 
 class ATradeClient(botpy.Client):
     """a-trade 机器人 Client，挂在调度器上用于推送。"""
 
-    def __init__(self, *args, scheduler: Optional["DailyScheduler"] = None, **kwargs):
+    def __init__(self, *args, scheduler: Optional[DailyScheduler] = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._scheduler = scheduler
 
@@ -77,9 +54,9 @@ class ATradeClient(botpy.Client):
             group_openid=message.group_openid,
             msg_type=0,
             msg_id=message.id,
-            content=f"✅ a-trade 已收到\n\n"
-                    f"自动推送已配置，无需手动触发。\n"
-                    f"下次推送: 收盘日报 15:30",
+            content="✅ a-trade 已收到\n\n"
+                    "自动推送已配置，无需手动触发。\n"
+                    "下次推送: 收盘日报 15:30",
         )
 
 
@@ -87,10 +64,10 @@ class DailyScheduler:
     """每日定时任务调度器。"""
 
     def __init__(self):
-        self.holdings = load_holdings()
+        self.holdings = load_holdings_config()
         self.watch_symbols = [h.get("symbol") for h in self.holdings if h.get("symbol")]
-        self.watch_keywords = self._load_keywords()
-        self.monitor_config = load_monitor_config()
+        self.watch_keywords = load_watch_keywords() or self._load_keywords()
+        self.monitor_config = load_monitor_config_from_module()
         self.calendar = TradingCalendar()
         self.screen_runner = ScreenMonitorRunner(self.monitor_config.get("screen"))
         self.t_runner = TMonitorRunner(self.monitor_config.get("t_monitor"))
@@ -176,24 +153,29 @@ class DailyScheduler:
     # ============================================================
 
     async def _push_markdown(self, title: str, markdown: str):
-        """通过 botpy API 推 Markdown 到群。"""
+        """通过 botpy API 推 Markdown 到群。
+
+        使用 atrade.notify.split_markdown_by_bytes 按 UTF-8 字节切分；
+        超过平台 4096 字节上限时会分多条发送（带尾部省略）。
+        """
+        from atrade.notify import split_markdown_by_bytes
         if not self._client:
             logger.error("botpy client 未启动")
             return
-        try:
-            # 标题单独作为头部
-            full_md = f"# {title}\n\n{markdown}"
-            # 截断（Markdown 限制 4096 字节）
-            if len(full_md) > 3800:
-                full_md = full_md[:3800] + "\n\n...(内容过长，已截断)"
-            result = await self._client.api.post_group_message(
-                group_openid=self.group_openid,
-                msg_type=2,
-                markdown=MarkdownPayload(content=full_md),
-            )
-            logger.success(f"✅ 推送成功: id={result.get('id')}")
-        except Exception as e:
-            logger.error(f"❌ 推送失败: {e}")
+        full_md = f"# {title}\n\n{markdown}"
+        chunks = split_markdown_by_bytes(full_md, max_bytes=3800)
+        for i, chunk in enumerate(chunks):
+            try:
+                result = await self._client.api.post_group_message(
+                    group_openid=self.group_openid,
+                    msg_type=2,
+                    markdown=MarkdownPayload(content=chunk),
+                )
+                logger.success(
+                    f"✅ 推送成功 [{i+1}/{len(chunks)}]: id={result.get('id')}"
+                )
+            except Exception as e:
+                logger.error(f"❌ 推送失败 [{i+1}/{len(chunks)}]: {e}")
 
     def _should_run_now(self) -> bool:
         return self.calendar.is_open_for_intraday_scan()
@@ -270,17 +252,28 @@ class DailyScheduler:
         if not alerts:
             return
         md = self.t_runner.to_markdown(alerts)
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             self._push_markdown("🔔 a-trade 做T信号", md),
             self._bot_loop,
         )
+        # P1-4：等待推送结果，成功后才提交已发送状态
+        try:
+            future.result(timeout=10)
+            self.t_runner.commit_sent(alerts)
+            logger.info(f"✅ {len(alerts)} 条做T告警已提交")
+        except Exception as e:
+            logger.error(f"❌ 做T推送失败，告警不提交以便重试: {e}")
 
     # ============================================================
     # 启动/停止
     # ============================================================
 
-    def start(self):
-        """启动调度器和 botpy client。"""
+    def start(self, *, ready_timeout: float = 30.0):
+        """启动调度器和 botpy client。
+
+        Args:
+            ready_timeout: 等待 botpy READY 事件的最长时间（秒）。
+        """
         logger.info("🚀 启动 a-trade 调度器")
 
         # 启动 botpy（后台线程跑事件循环）
@@ -302,12 +295,17 @@ class DailyScheduler:
         self._bot_thread = threading.Thread(target=_run_bot, daemon=True)
         self._bot_thread.start()
 
-        # 等 botpy ready
+        # 等 botpy READY 事件，超时则报错退出而非静默启动
         import time
-        for _ in range(30):
+        start = time.time()
+        while time.time() - start < ready_timeout:
             if self._client and getattr(self._client, "robot", None):
                 break
-            time.sleep(1)
+            time.sleep(0.5)
+        else:
+            raise RuntimeError(
+                f"botpy 客户端在 {ready_timeout}s 内未就绪，请检查网络与凭据"
+            )
         logger.success("✅ botpy 客户端已就绪")
 
         # 启动调度器

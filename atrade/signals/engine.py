@@ -30,7 +30,6 @@ from enum import Enum
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
 
 class SignalType(str, Enum):
@@ -81,19 +80,23 @@ class SignalEngine:
 
         # 因子 1: 波段反弹（60 日跌幅 > 15% + 缩量 + RSI 在 30-50）
         h = self._factor_wave_rebound(df, latest)
-        if h: buy_factors.append(h)
+        if h:
+            buy_factors.append(h)
 
         # 因子 2: 趋势确认（MA5 上穿 MA10 + 量比放大）
         h = self._factor_trend_confirm(df, latest, prev)
-        if h: buy_factors.append(h)
+        if h:
+            buy_factors.append(h)
 
         # 因子 3: 放量突破（60 日新高 + 量比 > 1.5）
         h = self._factor_breakout(df, latest)
-        if h: buy_factors.append(h)
+        if h:
+            buy_factors.append(h)
 
         # 因子 4: 超卖反弹（RSI < 25 + 触及 BOLL 下轨）
         h = self._factor_oversold(df, latest)
-        if h: buy_factors.append(h)
+        if h:
+            buy_factors.append(h)
 
         if buy_factors:
             n = len(buy_factors)

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Iterable
 
 import akshare as ak
 from loguru import logger

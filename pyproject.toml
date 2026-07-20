@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-trade"
+version = "0.1.0"
+description = "A 股做 T 信号、回测与盘中监控"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "a-trade contributors" }]
+dependencies = [
+    "apscheduler>=3.10,<4",
+    "loguru>=0.7,<1",
+    "numpy>=1.26,<3",
+    "pandas>=2.0,<3",
+    "python-dotenv>=1.0,<2",
+    "requests>=2.31,<3",
+    "qq-botpy>=1.0,<2",
+    "websockets>=11,<14",
+    "akshare>=1.16,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<9",
+    "pytest-cov>=4.1,<6",
+    "ruff>=0.6,<2",
+    "coverage>=7.4,<8",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["atrade*"]
+exclude = ["tests*", "scripts*", "docs*", "config*", "data*", "reports*", "launchd*"]
+
+[tool.pytest]
+collect_ignore = [
+    "scripts/test_botpy.py",
+    "scripts/test_c2c_proactive.py",
+    "scripts/test_e2e_push.py",
+    "scripts/test_openclaw.py",
+    "scripts/test_passive_reply.py",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# UP045 requires Python 3.10+; we support 3.9
+ignore = ["E501", "B008", "B905", "UP045", "UP006", "UP007"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"scripts/*" = ["E402", "B007"]
+"atrade/per_symbol/*" = ["E402"]
+
+[tool.coverage.run]
+source = ["atrade"]
+omit = [
+    "atrade/per_symbol/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

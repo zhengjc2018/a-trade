@@ -6,10 +6,10 @@
 - 本地缓存层（atrade.data.cache）
 - 东财当日快照（atrade.data.eastmoney）
 """
-from .quotes import QuoteProvider, Quote
-from .history import HistoryProvider, KLine
 from .cache import LocalCache
 from .eastmoney import fetch_snap
+from .history import HistoryProvider, KLine
+from .quotes import Quote, QuoteProvider
 
 __all__ = [
     "QuoteProvider",

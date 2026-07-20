@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
 # ============================================================
 # 移动平均类
 # ============================================================
@@ -31,7 +30,7 @@ def macd(
     signal: int = 9,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """MACD 指标。
-    
+
     Returns:
         (DIF, DEA, MACD_hist)
         - DIF = EMA(fast) - EMA(slow)
@@ -59,7 +58,7 @@ def kdj(
     m2: int = 3,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """KDJ 指标。
-    
+
     Returns:
         (K, D, J)
         - RSV = (close - lowest_low_n) / (highest_high_n - lowest_low_n) * 100
@@ -83,7 +82,7 @@ def kdj(
 
 def rsi(close: pd.Series, n: int = 14) -> pd.Series:
     """RSI 指标。
-    
+
     RSI = 100 - 100 / (1 + RS)
     RS = 平均涨幅 / 平均跌幅
     """
@@ -105,7 +104,7 @@ def boll(
     k: float = 2.0,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """布林带。
-    
+
     Returns:
         (MID, UPPER, LOWER)
         - MID = SMA(close, n)
@@ -134,7 +133,7 @@ def vol_ma(volume: pd.Series, n: int = 5) -> pd.Series:
 
 def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """给日线 DataFrame 加所有指标。
-    
+
     输入列：日期/开盘/收盘/最高/最低/成交量
     输出新增列：MA5/MA10/MA20/EMA12/EMA26/MACD_*/KDJ_*/RSI*/BOLL_*/VOL_MA5
     """
