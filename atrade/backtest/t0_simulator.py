@@ -319,7 +319,6 @@ class T0Simulator:
                         trades,
                     )
                     fee_total += trades[-1].fee
-                    pos.cash += (cur_price * (1 - self.slippage_pct)) * t_holdings - trades[-1].fee
                     pos.t_avg_cost = 0.0
                     pos.open_cycle = False
                     if trades[-1].profit >= 0:
@@ -341,7 +340,6 @@ class T0Simulator:
                             trades,
                         )
                         fee_total += trades[-1].fee
-                        pos.cash += (cur_price * (1 - self.slippage_pct)) * sell_qty - trades[-1].fee
                         if trades[-1].profit >= 0:
                             t_win += 1
                         else:
@@ -356,7 +354,6 @@ class T0Simulator:
                         trades,
                     )
                     fee_total += trades[-1].fee
-                    pos.cash -= (cur_price * (1 + self.slippage_pct)) * gap + trades[-1].fee
                     pos.open_cycle = False
 
             t_position_max = max(t_position_max, t_holdings)
@@ -476,12 +473,13 @@ class T0Simulator:
             amount=amount, signal=signal_name, fee=fee,
         ))
         pos.cash -= (amount + fee)
-        pos.locked_quantity += qty
-        # T 仓加权成本
-        prev_cost = pos.t_avg_cost * pos.t_holdings_via_state()
-        new_holdings = pos.t_holdings_via_state() + qty
+        # 先算 T 仓加权成本（用加锁前的状态），再加锁
+        prev_holdings = pos.t_holdings_via_state()
+        prev_cost = pos.t_avg_cost * prev_holdings
+        new_holdings = prev_holdings + qty
         if new_holdings > 0:
             pos.t_avg_cost = (prev_cost + buy_price * qty) / new_holdings
+        pos.locked_quantity += qty
         pos.open_cycle = True
 
     def _do_sell(self, pos: Position, price: float, qty: int,
