@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from .botpy_notifier import BotpyNotifier
+from .dingtalk import DingTalkNotifier, render_for_dingtalk
 from .openclaw import OpenClawNotifier
 
 
@@ -42,8 +43,8 @@ def load_notifier(
     """根据配置选择 Notifier 实现。
 
     Args:
-        preferred: "openclaw" / "botpy"。
-        target_group: 显式覆盖环境变量。
+        preferred: "openclaw" / "botpy" / "dingtalk"。
+        target_group: QQ 群 ID（仅 QQ 通道需要）。
 
     Returns:
         Notifier 实例。
@@ -52,13 +53,21 @@ def load_notifier(
         ValueError: 配置缺失。
     """
     load_dotenv()
+    preferred = (preferred or "openclaw").lower()
+
+    if preferred == "dingtalk":
+        try:
+            return DingTalkNotifier()
+        except Exception as e:
+            logger.warning(f"DingTalkNotifier 初始化失败 ({e})")
+            raise
+
     target = target_group or os.getenv("QQ_TARGET_GROUP")
     if not target or target.startswith("your_"):
         raise ValueError(
             "未配置 QQ_TARGET_GROUP（或仍为占位符），请在 .env 设置"
         )
 
-    preferred = (preferred or "openclaw").lower()
     if preferred == "botpy":
         try:
             return BotpyNotifier()
@@ -111,6 +120,8 @@ __all__ = [
     "Notifier",
     "BotpyNotifier",
     "OpenClawNotifier",
+    "DingTalkNotifier",
+    "render_for_dingtalk",
     "load_notifier",
     "split_markdown_by_bytes",
 ]
