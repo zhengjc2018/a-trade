@@ -13,5 +13,3 @@
 - `git push vps main` → 成功，`ef16778..ee82971`，远端 hook 已重启 `a-trade`
 - `git push origin main` → 失败：GitHub HTTP/2 framing error；HTTP/1.1 重试仍无法连接 443
 - `git push git@github.com:zhengjc2018/a-trade.git main` → 失败：当前 deploy key 无写权限
-- **阻塞项：** 无
-- **最后更新：** 2026-07-21（Asia/Shanghai）
