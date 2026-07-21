@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,6 @@ from atrade.per_symbol.report import build_report, render_markdown
 from atrade.per_symbol.risk import compute_risk
 from atrade.per_symbol.styler import classify_style, summarize
 from atrade.per_symbol.volatility import compute_volatility
-from atrade.signals import SignalEngine
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 HOLDINGS_FILE = Path(__file__).resolve().parents[1] / "config" / "holdings.json"
@@ -39,6 +39,15 @@ def report_one(symbol: str, name: str, cost_price: float, quantity: int,
     daily = hp.fetch_with_cache(symbol, scale="1d", datalen=252)
     if daily is None or len(daily) < 60:
         raise ValueError(f"{symbol} 日线数据不足")
+    latest_price = float(daily.iloc[-1]["close"])
+    if not math.isfinite(latest_price) or latest_price <= 0:
+        latest_price = None
+    display_name = name or symbol
+    if display_name == symbol and "name" in daily.columns:
+        names = daily["name"].dropna().astype(str)
+        valid_names = names[~names.isin(("", "None", "nan"))]
+        if not valid_names.empty:
+            display_name = valid_names.iloc[-1]
     intraday = hp.fetch_with_cache(symbol, scale="5m", datalen=240)
 
     volatility = compute_volatility(daily)
@@ -55,12 +64,13 @@ def report_one(symbol: str, name: str, cost_price: float, quantity: int,
             "position_pct": 0.1,
         }
     style = classify_style(volatility, risk, adaptive)
-    summary = summarize(name or symbol, style, volatility, risk, adaptive)
+    summary = summarize(display_name, style, volatility, risk, adaptive)
     rep = build_report(
-        symbol=symbol, name=name or symbol,
+        symbol=symbol, name=display_name,
         cost_price=cost_price, quantity=quantity,
         volatility=volatility, risk=risk, adaptive=adaptive,
         style=style, summary=summary, intraday_days=intraday_days,
+        latest_price=latest_price,
     )
     return render_markdown(rep)
 

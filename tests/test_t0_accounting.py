@@ -43,6 +43,7 @@ def test_no_trades_net_value_equals_buy_hold():
     assert result.t1_locks_held == 0
     # 死拿涨幅 = (110 - 100) / 100 = 10%
     assert result.buy_hold_profit == pytest.approx(10.0, abs=1e-6)
+    assert result.last_close == pytest.approx(110.0, abs=1e-6)
 
 
 def test_position_state_basic():

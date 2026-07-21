@@ -7,6 +7,7 @@ def test_build_report_returns_symbol_report():
         volatility={"atr_14_pct": 2.6}, risk={"annual_vol_pct": 28.7},
         adaptive={"intra_amp_p50": 2.3, "preferred_factors": ["波段反弹"], "position_pct": 0.25},
         style="range", summary="ok",
+        latest_price=34.63,
     )
     assert rep.symbol == "600522"
     assert rep.style == "range"
@@ -26,8 +27,11 @@ def test_render_markdown_contains_sections():
                   "preferred_factors": ["波段反弹", "趋势确认"], "position_pct": 0.25},
         style="range",
         summary="中天科技属于 range 风格",
+        latest_price=34.63,
     )
     md = render_markdown(rep)
     for section in ("# 中天科技", "## 1. 风格归类", "## 2. 波动性",
                     "## 3. 做 T 适配度", "## 4. 风险指标", "## 5. 自然语言总结"):
         assert section in md, section
+    assert "成本价（用户输入）：12.50" in md
+    assert "最新收盘价：34.63" in md

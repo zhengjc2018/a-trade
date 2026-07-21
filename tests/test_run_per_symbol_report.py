@@ -37,7 +37,6 @@ def fake_env(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(run_per_symbol_report, "REPORTS_DIR", tmp_path)
     monkeypatch.setattr(run_per_symbol_report, "HistoryProvider", lambda: FakeProvider(daily, intraday))
-    monkeypatch.setattr(run_per_symbol_report, "SignalEngine", lambda: None)
     monkeypatch.setattr(
         run_per_symbol_report,
         "load_holdings",
@@ -53,4 +52,5 @@ def test_cli_portfolio_creates_report(fake_env):
     assert files
     text = files[0].read_text()
     assert "中天科技" in text
+    assert "最新收盘价：11.19" in text
     assert "## 5. 自然语言总结" in text

@@ -20,6 +20,7 @@ class SymbolReport:
     risk: dict
     style: str
     summary: str
+    latest_price: Optional[float] = None
 
 
 def build_report(
@@ -35,6 +36,7 @@ def build_report(
     lookback_days: int = 252,
     intraday_days: int = 30,
     generated_at: Optional[str] = None,
+    latest_price: Optional[float] = None,
 ) -> SymbolReport:
     return SymbolReport(
         symbol=symbol,
@@ -49,6 +51,7 @@ def build_report(
         risk=risk,
         style=style,
         summary=summary,
+        latest_price=latest_price,
     )
 
 
@@ -59,7 +62,12 @@ def render_markdown(report: SymbolReport) -> str:
     lines = [
         f"# {report.name} ({report.symbol}) 做 T 策略报告",
         "",
-        f"- 成本价：{report.cost_price:.2f} / 数量：{report.quantity}",
+        f"- 成本价（用户输入）：{report.cost_price:.2f} / 数量：{report.quantity}",
+        (
+            f"- 最新收盘价：{report.latest_price:.2f}"
+            if report.latest_price is not None
+            else "- 最新收盘价：未获取"
+        ),
         f"- 报告时间：{report.generated_at}",
         f"- 数据范围：{report.lookback_days} 个日线 + {report.intraday_days} 个交易日的 5/15/30/60 分钟线",
         "",

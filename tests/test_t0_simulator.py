@@ -120,6 +120,7 @@ def test_run_with_no_signals_returns_zero_t_profit():
     assert r.t_loss_count == 0
     assert r.fee_total == 0.0
     assert r.buy_hold_profit == 0.0
+    assert r.last_close == 100.0
     assert r.quantity == 1000
     # 守恒：期末总持股 == 初始 quantity
     assert r.final_total_quantity == 1000

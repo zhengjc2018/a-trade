@@ -111,6 +111,7 @@ class T0BacktestResult:
     final_total_quantity: int = 0
     peak_cash_usage: float = 0.0
     trades: list[T0Trade] = field(default_factory=list)
+    last_close: float = 0.0
 
     def summary(self) -> str:
         lines = [
@@ -120,7 +121,8 @@ class T0BacktestResult:
             "## 核心指标",
             "| 指标 | 数值 |",
             "|---|---|",
-            f"| 初始成本 | {self.initial_cost:.2f} |",
+            f"| 初始成本（用户输入） | {self.initial_cost:.2f} |",
+            f"| 最新收盘价（回测末日） | {self.last_close:.2f} |",
             f"| 最终成本 | {self.final_cost:.2f} |",
             f"| **成本变化** | **{self.cost_change:+.2f}%** |",
             f"| T 净盈亏 | {self.net_t_profit:+.2f}（已扣费用） |",
@@ -417,6 +419,7 @@ class T0Simulator:
             final_total_quantity=pos.total,
             peak_cash_usage=peak_cash_usage,
             trades=trades,
+            last_close=float(last_close),
         )
 
     # ---------- 内部动作 ----------
