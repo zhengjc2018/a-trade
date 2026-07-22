@@ -131,6 +131,13 @@ class DingTalkNotifier:
                     f"DingTalk 推送失败 [{resp.status_code}]: "
                     f"{data.get('errmsg', resp.text[:200])}"
                 )
+                from .delivery import DeliveryError
+
+                raise DeliveryError(
+                    "dingtalk",
+                    data.get("errmsg") or f"HTTP {resp.status_code}",
+                    response=data,
+                )
             else:
                 logger.success(f"✅ DingTalk 已发送: {payload.get('msgtype')}")
             return data

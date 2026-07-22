@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from datetime import datetime, time
 from typing import Optional
 
 import botpy
@@ -12,7 +13,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from botpy import logging
 from botpy.message import GroupMessage
-from botpy.types.message import MarkdownPayload
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -27,7 +27,9 @@ from atrade.config import (
 )
 from atrade.monitor import ScreenMonitorRunner, TMonitorRunner, TradingCalendar
 from atrade.news.collector import NewsCollector
+from atrade.notify import DeliveryLedger, DeliveryRouter, DingTalkNotifier, OpenClawNotifier
 from atrade.report.generator import ReportGenerator
+from atrade.scheduler.recovery import RecoveryTask, recover_missed_tasks
 
 _log = logging.get_logger()
 load_dotenv()
@@ -85,6 +87,15 @@ class DailyScheduler:
         if not all([self.appid, self.secret, self.group_openid]):
             raise ValueError("请在 .env 配置 QQ_BOT_APPID / SECRET / TARGET_GROUP")
 
+        primary_name = os.getenv("NOTIFY_PRIMARY", "dingtalk").lower()
+        fallback_name = os.getenv("NOTIFY_FALLBACK", "openclaw").lower()
+        if primary_name != "dingtalk":
+            raise ValueError("NOTIFY_PRIMARY 当前仅支持 dingtalk")
+        primary = DingTalkNotifier()
+        fallback = OpenClawNotifier() if fallback_name == "openclaw" else None
+        self.delivery_ledger = DeliveryLedger()
+        self.delivery_router = DeliveryRouter(primary, fallback, self.delivery_ledger)
+
         self.scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
         self._client: Optional[ATradeClient] = None
         self._bot_thread: Optional[threading.Thread] = None
@@ -100,10 +111,21 @@ class DailyScheduler:
         """注册定时任务。"""
         # 早盘快讯：每个交易日 8:00
         self.scheduler.add_job(
+            self._job_delivery_heartbeat,
+            CronTrigger(hour=7, minute=55),
+            id="delivery_heartbeat",
+            name="通知心跳",
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
+        self.scheduler.add_job(
             self._job_morning_brief,
             CronTrigger(hour=8, minute=0),
             id="morning_brief",
             name="早盘快讯",
+            coalesce=True,
+            misfire_grace_time=7200,
         )
 
         # 午盘报告：每个交易日 12:30
@@ -112,6 +134,8 @@ class DailyScheduler:
             CronTrigger(hour=12, minute=30),
             id="noon_report",
             name="午盘报告",
+            coalesce=True,
+            misfire_grace_time=5400,
         )
 
         # 收盘日报：每个交易日 15:30
@@ -120,6 +144,8 @@ class DailyScheduler:
             CronTrigger(hour=15, minute=30),
             id="closing_report",
             name="收盘日报",
+            coalesce=True,
+            misfire_grace_time=21600,
         )
 
         # 持仓新闻汇总：每个交易日 17:00
@@ -128,6 +154,8 @@ class DailyScheduler:
             CronTrigger(hour=17, minute=0),
             id="holdings_news",
             name="持仓新闻",
+            coalesce=True,
+            misfire_grace_time=21600,
         )
 
         # 盘中选股：每 N 分钟扫描一次，只在交易日盘中运行
@@ -146,36 +174,52 @@ class DailyScheduler:
             name="做T监控",
         )
 
+        for hour, minute, task_name, callback in [
+            (8, 5, "morning_brief", self._job_morning_brief),
+            (12, 35, "noon_report", self._job_noon_report),
+            (15, 35, "closing_report", self._job_closing_report),
+            (17, 5, "holdings_news", self._job_holdings_news),
+        ]:
+            self.scheduler.add_job(
+                lambda name=task_name, cb=callback: self._job_delivery_guard(name, cb),
+                CronTrigger(hour=hour, minute=minute),
+                id=f"{task_name}_guard",
+                name=f"{task_name}送达检查",
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+
+        self.scheduler.add_job(
+            self._job_retry_failed,
+            CronTrigger(minute="*/5"),
+            id="retry_failed_deliveries",
+            name="通知失败重试",
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+        self.scheduler.add_job(
+            self._job_t_status_summary,
+            CronTrigger(hour=11, minute=35),
+            id="t_status_morning",
+            name="做T上午汇总",
+        )
+        self.scheduler.add_job(
+            self._job_t_status_summary,
+            CronTrigger(hour=15, minute=5),
+            id="t_status_closing",
+            name="做T收盘汇总",
+        )
+
         logger.info("✅ 定时任务注册完成: 6 个")
 
     # ============================================================
     # 推送辅助
     # ============================================================
 
-    async def _push_markdown(self, title: str, markdown: str):
-        """通过 botpy API 推 Markdown 到群。
-
-        使用 atrade.notify.split_markdown_by_bytes 按 UTF-8 字节切分；
-        超过平台 4096 字节上限时会分多条发送（带尾部省略）。
-        """
-        from atrade.notify import split_markdown_by_bytes
-        if not self._client:
-            logger.error("botpy client 未启动")
-            return
-        full_md = f"# {title}\n\n{markdown}"
-        chunks = split_markdown_by_bytes(full_md, max_bytes=3800)
-        for i, chunk in enumerate(chunks):
-            try:
-                result = await self._client.api.post_group_message(
-                    group_openid=self.group_openid,
-                    msg_type=2,
-                    markdown=MarkdownPayload(content=chunk),
-                )
-                logger.success(
-                    f"✅ 推送成功 [{i+1}/{len(chunks)}]: id={result.get('id')}"
-                )
-            except Exception as e:
-                logger.error(f"❌ 推送失败 [{i+1}/{len(chunks)}]: {e}")
+    def _deliver(self, task_name: str, title: str, markdown: str, unique_suffix: str = ""):
+        day = datetime.now().strftime("%Y-%m-%d")
+        task_key = f"{task_name}:{day}{unique_suffix}"
+        return self.delivery_router.send(task_key, title, markdown, task_name=task_name)
 
     def _should_run_now(self) -> bool:
         return self.calendar.is_open_for_intraday_scan()
@@ -189,30 +233,21 @@ class DailyScheduler:
             return
         logger.info("⏰ 触发: 早盘快讯")
         report = self.report_gen.generate_morning_brief()
-        asyncio.run_coroutine_threadsafe(
-            self._push_markdown("🌅 a-trade 早盘快讯", report),
-            self._bot_loop,
-        )
+        return self._deliver("morning_brief", "🌅 a-trade 早盘快讯", report)
 
     def _job_noon_report(self):
         if not self.calendar.is_trade_day():
             return
         logger.info("⏰ 触发: 午盘报告")
         report = self.report_gen.generate_noon_report()
-        asyncio.run_coroutine_threadsafe(
-            self._push_markdown("☀️ a-trade 午盘报告", report),
-            self._bot_loop,
-        )
+        return self._deliver("noon_report", "☀️ a-trade 午盘报告", report)
 
     def _job_closing_report(self):
         if not self.calendar.is_trade_day():
             return
         logger.info("⏰ 触发: 收盘日报")
         report = self.report_gen.generate_closing_report()
-        asyncio.run_coroutine_threadsafe(
-            self._push_markdown("📊 a-trade 收盘日报", report),
-            self._bot_loop,
-        )
+        return self._deliver("closing_report", "📊 a-trade 收盘日报", report)
 
     def _job_holdings_news(self):
         if not self.calendar.is_trade_day():
@@ -227,10 +262,7 @@ class DailyScheduler:
             logger.info("无持仓相关新闻")
             return
         md = "# 📰 持仓股新闻汇总\n\n" + collector.to_markdown(news, max_len=250)
-        asyncio.run_coroutine_threadsafe(
-            self._push_markdown("持仓新闻汇总", md),
-            self._bot_loop,
-        )
+        return self._deliver("holdings_news", "持仓新闻汇总", md)
 
     def _job_screen_monitor(self):
         if not self.calendar.is_open_for_intraday_scan():
@@ -239,10 +271,8 @@ class DailyScheduler:
         md = self.screen_runner.run_once()
         if not md:
             return
-        asyncio.run_coroutine_threadsafe(
-            self._push_markdown("📈 a-trade 盘中选股", md),
-            self._bot_loop,
-        )
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver("screen_monitor", "📈 a-trade 盘中选股", md, suffix)
 
     def _job_t_monitor(self):
         if not self.calendar.is_open_for_intraday_scan():
@@ -252,17 +282,67 @@ class DailyScheduler:
         if not alerts:
             return
         md = self.t_runner.to_markdown(alerts)
-        future = asyncio.run_coroutine_threadsafe(
-            self._push_markdown("🔔 a-trade 做T信号", md),
-            self._bot_loop,
-        )
-        # P1-4：等待推送结果，成功后才提交已发送状态
+        suffix = f":{datetime.now().strftime('%H%M%S')}"
         try:
-            future.result(timeout=10)
+            result = self._deliver("t_monitor", "🔔 a-trade 做T信号", md, suffix)
+            if not result.ok:
+                raise RuntimeError(result.last_error or "双通道均失败")
             self.t_runner.commit_sent(alerts)
             logger.info(f"✅ {len(alerts)} 条做T告警已提交")
         except Exception as e:
             logger.error(f"❌ 做T推送失败，告警不提交以便重试: {e}")
+
+    def _job_delivery_heartbeat(self):
+        if not self.calendar.is_trade_day():
+            return
+        markdown = "\n".join([
+            "# ✅ a-trade 调度心跳",
+            "",
+            "- 主通道：钉钉",
+            "- 备用通道：QQ",
+            "- 今日任务：08:00 早报、12:30 午报、15:30 收盘、17:00 新闻",
+            "- 做T：盘中每 2 分钟扫描，11:35/15:05 状态汇总",
+            "- 状态：调度器已就绪",
+        ])
+        return self._deliver("delivery_heartbeat", "✅ a-trade 调度心跳", markdown)
+
+    def _job_delivery_guard(self, task_name: str, callback):
+        day = datetime.now().strftime("%Y-%m-%d")
+        if not self.delivery_ledger.is_delivered(f"{task_name}:{day}"):
+            logger.warning(f"送达检查发现漏发: {task_name}")
+            return callback()
+
+    def _job_retry_failed(self):
+        results = self.delivery_router.retry_failed()
+        if results:
+            logger.info(f"通知失败重试完成: {len(results)} 条")
+        return results
+
+    def _job_t_status_summary(self):
+        if not self.calendar.is_trade_day():
+            return
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver(
+            "t_status",
+            "🔎 a-trade 做T状态",
+            self.t_runner.status_markdown(),
+            suffix,
+        )
+
+    def _recover_missed_tasks(self):
+        now = datetime.now()
+        tasks = [
+            RecoveryTask("morning_brief", time(8, 0), time(10, 0), self._job_morning_brief),
+            RecoveryTask("noon_report", time(12, 30), time(14, 0), self._job_noon_report),
+            RecoveryTask("closing_report", time(15, 30), time(23, 59), self._job_closing_report),
+            RecoveryTask("holdings_news", time(17, 0), time(23, 59), self._job_holdings_news),
+        ]
+        return recover_missed_tasks(
+            now,
+            self.calendar.is_trade_day(now),
+            self.delivery_ledger.is_delivered,
+            tasks,
+        )
 
     # ============================================================
     # 启动/停止
@@ -312,6 +392,9 @@ class DailyScheduler:
         self.scheduler.start()
         logger.success("✅ 调度器已启动")
         self._print_next_jobs()
+        recovered = self._recover_missed_tasks()
+        if recovered:
+            logger.info(f"启动补发任务: {recovered}")
 
     def _print_next_jobs(self):
         """打印下次任务时间。"""

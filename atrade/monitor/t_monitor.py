@@ -74,6 +74,9 @@ class TMonitorRunner:
         self.history = HistoryProvider()
         self.engine = T0Simulator(scale=self.config.scale, datalen=self.config.datalen).engine
         self._state = self._load_state()
+        self.scan_count = 0
+        self.signal_count = 0
+        self.error_count = 0
 
     def _load_state(self) -> dict:
         if not _STATE_FILE.exists():
@@ -137,6 +140,7 @@ class TMonitorRunner:
             return []
 
         alerts: list[dict] = []
+        self.scan_count += 1
         for item in self.config.symbols:
             try:
                 df = self.history.fetch_with_cache(
@@ -176,9 +180,28 @@ class TMonitorRunner:
                         "note": item.note,
                     })
             except Exception as e:
+                self.error_count += 1
                 logger.warning(f"做T监控 {item.symbol} 失败: {e}")
 
+        self.signal_count += len(alerts)
         return alerts
+
+    def status_markdown(self) -> str:
+        if self.error_count:
+            conclusion = f"⚠️ 今日做T扫描有 {self.error_count} 次异常，请检查数据源"
+        elif self.signal_count:
+            conclusion = f"✅ 今日已发现并处理 {self.signal_count} 条做T候选信号"
+        else:
+            conclusion = "⏸️ 今日暂无满足执行门槛的做T信号"
+        return "\n".join([
+            "# 🔎 做T状态汇总",
+            "",
+            conclusion,
+            f"- 扫描次数：{self.scan_count}",
+            f"- 候选信号：{self.signal_count}",
+            f"- 扫描异常：{self.error_count}",
+            "- 说明：无信号不等于任务未运行",
+        ])
 
     @staticmethod
     def to_markdown(alerts: list[dict]) -> str:
