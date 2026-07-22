@@ -16,6 +16,8 @@
     "scan_interval_minutes": 2,
     "scale": "5m",
     "datalen": 120,
-    "symbols": []
+    "symbols": [],
+    "confirm_bars": 2,
+    "candidate_ttl_minutes": 30
   }
 }

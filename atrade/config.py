@@ -114,6 +114,18 @@ def _validate_monitor(cfg: dict) -> dict:
     if datalen <= 0:
         raise ConfigError(f"t_monitor.datalen 必须 > 0，实际: {datalen}")
 
+    confirm_bars = int(tmon.get("confirm_bars", 2))
+    if confirm_bars <= 0:
+        raise ConfigError(f"t_monitor.confirm_bars 必须 > 0，实际: {confirm_bars}")
+    if confirm_bars > 10:
+        raise ConfigError(f"t_monitor.confirm_bars 不能 > 10，实际: {confirm_bars}")
+
+    candidate_ttl = int(tmon.get("candidate_ttl_minutes", 30))
+    if candidate_ttl <= 0:
+        raise ConfigError(f"t_monitor.candidate_ttl_minutes 必须 > 0，实际: {candidate_ttl}")
+    if candidate_ttl > 240:
+        raise ConfigError(f"t_monitor.candidate_ttl_minutes 不能 > 240，实际: {candidate_ttl}")
+
     symbols = []
     for idx, item in enumerate(tmon.get("symbols") or []):
         symbols.append(_validate_holding(item, idx))
@@ -133,6 +145,8 @@ def _validate_monitor(cfg: dict) -> dict:
             "scan_interval_minutes": tmon_interval,
             "scale": scale,
             "datalen": datalen,
+            "confirm_bars": confirm_bars,
+            "candidate_ttl_minutes": candidate_ttl,
             "symbols": symbols,
         },
     }
