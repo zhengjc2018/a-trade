@@ -210,7 +210,7 @@ class DailyScheduler:
             name="做T收盘汇总",
         )
 
-        logger.info("✅ 定时任务注册完成: 6 个")
+        logger.info(f"✅ 定时任务注册完成: {len(self.scheduler.get_jobs())} 个")
 
     # ============================================================
     # 推送辅助
