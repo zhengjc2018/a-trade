@@ -61,6 +61,7 @@ class TMonitorConfig:
     datalen: int = 120
     confirm_bars: int = 2
     candidate_ttl_minutes: int = 30
+    allow_non_main_board: bool = False  # 默认排除 ST/创业板/科创板/京板
     symbols: list[TMonitorItem] = field(default_factory=list)
 
 
@@ -81,6 +82,7 @@ class TMonitorRunner:
             datalen=int(cfg.get("datalen", 120)),
             confirm_bars=int(cfg.get("confirm_bars", 2)),
             candidate_ttl_minutes=int(cfg.get("candidate_ttl_minutes", 30)),
+            allow_non_main_board=bool(cfg.get("allow_non_main_board", False)),
             symbols=[
                 TMonitorItem(
                     symbol=str(item.get("symbol", "")).zfill(6),

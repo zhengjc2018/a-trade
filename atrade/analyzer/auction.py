@@ -57,9 +57,16 @@ def fetch_sector_auction(top_n: int = 10) -> list[SectorAuction]:
         except Exception:
             continue
 
+    # 应用全局筛选：排除 ST/创业板/科创板/京板 的领涨股所在板块
+    from atrade.filters.stock_filter import StockFilterConfig, is_allowed
+    cfg = StockFilterConfig()
+    out = [
+        s for s in out
+        if is_allowed(s.leader_symbol, name=s.leader_name, config=cfg)
+    ]
     out.sort(key=lambda s: s.change_pct, reverse=True)
     top = out[:top_n]
-    logger.info(f"✅ 板块行情: {len(out)} 个，取 TOP {len(top)}")
+    logger.info(f"✅ 板块行情: 筛选后 {len(out)} 个，取 TOP {len(top)}")
     return top
 
 

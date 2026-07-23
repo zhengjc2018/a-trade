@@ -20,6 +20,7 @@
     "confirm_bars": 2,
     "candidate_ttl_minutes": 30,
     "auto_execute": true,
-    "lots_per_trade": 1.0
+    "lots_per_trade": 1.0,
+    "allow_non_main_board": false
   }
 }

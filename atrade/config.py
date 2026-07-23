@@ -153,6 +153,7 @@ def _validate_monitor(cfg: dict) -> dict:
             "datalen": datalen,
             "confirm_bars": confirm_bars,
             "candidate_ttl_minutes": candidate_ttl,
+            "allow_non_main_board": bool(tmon.get("allow_non_main_board", False)),
             "auto_execute": bool(tmon.get("auto_execute", True)),
             "lots_per_trade": float(tmon.get("lots_per_trade", 1.0)),
             "symbols": symbols,
