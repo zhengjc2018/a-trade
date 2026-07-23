@@ -46,7 +46,7 @@
           (h.enabled !== false ? "checked" : "") + '> 启用</label>' +
       '</div>' +
       '<div class="row"><label>成本价</label><input class="cost" type="number" step="0.01" value="' + (h.cost_price || 0) + '"></div>' +
-      '<div class="row"><label>数量</label><input class="qty" type="number" value="' + (h.quantity || 0) + '"></div>' +
+      '<div class="row"><label>数量(手)</label><input class="qty" type="number" step="0.01" value="' + ((h.quantity || 0) / 100) + '"></div>' +
       '<div class="row"><label>买入日</label><input class="date" type="text" placeholder="YYYY-MM-DD" value="' + (h.buy_date || "") + '"></div>' +
       '<div class="row"><label>备注</label><input class="note" type="text" maxlength="200" value="' + (h.note || "").replace(/"/g, "&quot;") + '"></div>' +
       '<div class="actions">' +
@@ -56,9 +56,11 @@
       '</div>';
 
     card.querySelector(".save").onclick = async function () {
+      const lots = parseFloat(card.querySelector(".qty").value);
+      const shares = Math.round(lots * 100);
       const patch = {
         cost_price: parseFloat(card.querySelector(".cost").value),
-        quantity: parseInt(card.querySelector(".qty").value, 10),
+        quantity: shares,
         buy_date: card.querySelector(".date").value,
         note: card.querySelector(".note").value,
       };
@@ -145,7 +147,7 @@
       symbol: sym,
       name: document.getElementById("add-name").value.trim() || sym,
       cost_price: parseFloat(document.getElementById("add-cost").value),
-      quantity: parseInt(document.getElementById("add-qty").value, 10),
+      quantity: Math.round(parseFloat(document.getElementById("add-qty").value) * 100),
       buy_date: document.getElementById("add-date").value.trim(),
       note: document.getElementById("add-note").value.trim(),
     };
