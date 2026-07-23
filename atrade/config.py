@@ -190,3 +190,42 @@ def load_watch_keywords() -> list[str]:
                 return [str(x) for x in kw]
             return []
     return []
+
+
+def load_holdings_with_meta() -> dict:
+    """加载 holdings 完整结构（含 disabled_symbols 与 watch_keywords）。
+
+    返回：
+        {
+            "holdings": [<normalized holding>, ...],
+            "disabled_symbols": [str, ...],  # 6 位代码
+            "watch_keywords": [str, ...],
+        }
+    """
+    for path in _candidate_paths("holdings", DEFAULT_HOLDINGS, LOCAL_HOLDINGS, ENV_HOLDINGS):
+        if path.exists():
+            cfg = _read_json(path)
+            raw_holdings = cfg.get("holdings") or []
+            validated = [_validate_holding(item, idx) for idx, item in enumerate(raw_holdings)]
+
+            disabled = cfg.get("disabled_symbols") or []
+            if not isinstance(disabled, list):
+                raise ConfigError("disabled_symbols 必须是列表")
+            normalized_disabled: list[str] = []
+            for i, sym in enumerate(disabled):
+                s = str(sym).zfill(6)
+                if not _CODE_RE.match(s):
+                    raise ConfigError(f"disabled_symbols[{i}] 必须是 6 位数字，实际: {sym!r}")
+                normalized_disabled.append(s)
+
+            keywords = cfg.get("watch_keywords") or []
+            if not isinstance(keywords, list):
+                raise ConfigError("watch_keywords 必须是列表")
+
+            logger.info(f"加载 holdings meta: {path} (holdings={len(validated)}, disabled={len(normalized_disabled)})")
+            return {
+                "holdings": validated,
+                "disabled_symbols": normalized_disabled,
+                "watch_keywords": [str(k) for k in keywords],
+            }
+    raise ConfigError("未找到 holdings 配置文件")

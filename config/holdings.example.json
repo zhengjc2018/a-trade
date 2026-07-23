@@ -10,5 +10,6 @@
       "note": "替换为真实数据"
     }
   ],
-  "watch_keywords": ["示例关键词1", "示例关键词2"]
+  "watch_keywords": [],
+  "disabled_symbols": []
 }
