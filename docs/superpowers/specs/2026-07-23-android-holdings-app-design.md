@@ -15,10 +15,10 @@
 ## 目标
 
 1. 在 VPS 上新增 HTTP/Web 服务，监听 `0.0.0.0:8765`，提供：
-   - REST API 用于程序化编辑持仓（Bearer Token 鉴权）
+   - REST API 用于程序化编辑持仓（可选 Bearer Token 鉴权）
    - 单页 HTML UI 让手机浏览器可直接编辑
 2. 编辑后**热重载**调度器持仓配置，无需重启服务。
-3. 个人使用，单用户；安全靠随机生成的 Bearer Token。
+3. 个人使用，单用户；默认公开，可选启用 Bearer Token 鉴权。
 
 ## 非目标
 
@@ -38,7 +38,7 @@ VPS (96.30.194.21) — root 运行
   │
   └─ a-trade-web.service (新增)
        └─ FastAPI + uvicorn，监听 0.0.0.0:8765
-       └─ Bearer Token 中间件
+       └─ 可选 Bearer Token 中间件
        └─ 写 /opt/a-trade/config/holdings.local.json (原子)
        └─ 通过 socket 通知 scheduler reload
 ```
