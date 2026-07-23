@@ -161,6 +161,36 @@
     }
   }
 
+  async function refreshTrades() {
+    const r = await fetchJSON("/api/t-trades?limit=10");
+    const container = document.getElementById("trades");
+    if (!container) return;
+    container.innerHTML = "";
+    if (!r.ok) {
+      container.innerHTML = '<p class="muted">交易记录加载失败</p>';
+      return;
+    }
+    if (r.data.length === 0) {
+      container.innerHTML = '<p class="muted">今日暂无成交</p>';
+      return;
+    }
+    const ul = document.createElement("ul");
+    ul.style.cssText = "list-style:none;padding:0;margin:0";
+    r.data.forEach(function (t) {
+      const li = document.createElement("li");
+      li.style.cssText = "padding:6px 0;border-bottom:1px solid var(--border);font-size:13px";
+      const time = (t.timestamp || "").slice(11, 16);
+      const dirColor = t.direction === "BUY" ? "var(--buy)" : "var(--sell)";
+      const skip = t.skipped_reason ? ` <span class="muted">(${t.skipped_reason})</span>` : "";
+      li.innerHTML = `<span class="muted">${time}</span> ` +
+        `<b style="color:${dirColor}">${t.direction}</b> ` +
+        `${t.symbol} ${t.shares}股 @ ${t.price} ` +
+        `→ 剩余 ${t.holding_qty_after}股${skip}`;
+      ul.appendChild(li);
+    });
+    container.appendChild(ul);
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const tokInput = document.getElementById("token-input");
     tokInput.value = token();
@@ -169,10 +199,15 @@
       toast("Token 已保存", "ok");
       refresh();
     };
-    document.getElementById("reload-btn").onclick = reloadConfig;
+    document.getElementById("reload-btn").onclick = function () {
+      reloadConfig().then(refreshTrades);
+    };
     document.getElementById("add-btn").onclick = openAddDialog;
     document.getElementById("add-cancel").onclick = closeAddDialog;
-    document.getElementById("add-submit").onclick = submitAdd;
+    document.getElementById("add-submit").onclick = function () {
+      submitAdd().then(refreshTrades);
+    };
     refresh();
+    refreshTrades();
   });
 })();

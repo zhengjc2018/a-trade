@@ -126,6 +126,12 @@ def _validate_monitor(cfg: dict) -> dict:
     if candidate_ttl > 240:
         raise ConfigError(f"t_monitor.candidate_ttl_minutes 不能 > 240，实际: {candidate_ttl}")
 
+    lots_per_trade = float(tmon.get("lots_per_trade", 1.0))
+    if lots_per_trade <= 0:
+        raise ConfigError(f"t_monitor.lots_per_trade 必须 > 0，实际: {lots_per_trade}")
+    if lots_per_trade > 100:
+        raise ConfigError(f"t_monitor.lots_per_trade 不能 > 100，实际: {lots_per_trade}")
+
     symbols = []
     for idx, item in enumerate(tmon.get("symbols") or []):
         symbols.append(_validate_holding(item, idx))
@@ -147,6 +153,8 @@ def _validate_monitor(cfg: dict) -> dict:
             "datalen": datalen,
             "confirm_bars": confirm_bars,
             "candidate_ttl_minutes": candidate_ttl,
+            "auto_execute": bool(tmon.get("auto_execute", True)),
+            "lots_per_trade": float(tmon.get("lots_per_trade", 1.0)),
             "symbols": symbols,
         },
     }

@@ -294,6 +294,19 @@ class DailyScheduler:
                 raise RuntimeError(result.last_error or "双通道均失败")
             self.t_runner.commit_sent(alerts)
             logger.info(f"✅ {len(alerts)} 条做T告警已提交")
+            # 自动执行（默认开启）
+            from atrade.monitor.t_executor import TTradeExecutor
+            executor = getattr(self, "t_executor", None)
+            if executor is None:
+                tmon_cfg = self.monitor_config.get("t_monitor", {})
+                executor = TTradeExecutor(tmon_cfg)
+                self.t_executor = executor
+            for alert in alerts:
+                trade = executor.execute(alert)
+                if trade and not trade.get("skipped_reason"):
+                    logger.success(f"📒 T-trade: {trade['direction']} {trade['symbol']} {trade['shares']} 股")
+                elif trade and trade.get("skipped_reason"):
+                    logger.info(f"⏭️ T-trade 跳过: {trade['symbol']} - {trade['skipped_reason']}")
         except Exception as e:
             logger.error(f"❌ 做T推送失败，告警不提交以便重试: {e}")
 

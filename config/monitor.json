@@ -18,6 +18,8 @@
     "datalen": 120,
     "symbols": [],
     "confirm_bars": 2,
-    "candidate_ttl_minutes": 30
+    "candidate_ttl_minutes": 30,
+    "auto_execute": true,
+    "lots_per_trade": 1.0
   }
 }

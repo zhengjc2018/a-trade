@@ -130,6 +130,14 @@ def put_holding(symbol: str, patch: dict) -> dict:
     return updated
 
 
+@app.get("/api/t-trades", dependencies=[Depends(require_bearer)])
+def get_t_trades(limit: int = 20) -> list[dict]:
+    """最近的 T-trade 记录（默认 20 条）。"""
+    from atrade.monitor.t_executor import load_trades
+    trades = load_trades()
+    return trades[-limit:][::-1]  # 最新的在前
+
+
 @app.post("/api/reload", dependencies=[Depends(require_bearer)])
 def post_reload() -> dict:
     try:
