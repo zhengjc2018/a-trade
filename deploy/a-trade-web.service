@@ -1,0 +1,19 @@
+[Unit]
+Description=a-trade web admin
+After=network-online.target a-trade.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/a-trade
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/a-trade
+ExecStart=/opt/a-trade/.venv/bin/python -m uvicorn atrade.web.app:app --host 0.0.0.0 --port 8765
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/a-trade/logs/web.out.log
+StandardError=append:/opt/a-trade/logs/web.err.log
+
+[Install]
+WantedBy=multi-user.target
