@@ -59,8 +59,8 @@ VPS (96.30.194.21) — root 运行
 - `GET  /static/app.css`          — 前端样式
 
 中间件：
-- `require_bearer` 校验 `Authorization: Bearer ${A_TRADE_WEB_TOKEN}`
-- 缺失/错误 → 401
+- 无（公开访问）
+- 唯一约束：写操作加 IP 日志
 
 ### 2. `atrade/web/storage.py` — 原子写入
 
@@ -185,11 +185,9 @@ StandardError=append:/opt/a-trade/logs/web.err.log
 WantedBy=multi-user.target
 ```
 
-### 7. `.env` 新增
+### 7. `.env`
 
-```
-A_TRADE_WEB_TOKEN=<openssl rand -hex 32>
-```
+无需新增 token 字段（无鉴权）。日志目录 `/opt/a-trade/logs/` 复用现有。
 
 ## API 契约
 
@@ -198,7 +196,6 @@ GET  /api/health
 → 200 {"ok": true}
 
 GET  /api/holdings
-  Header: Authorization: Bearer <token>
 → 200 [
     {
       "symbol": "600522",
@@ -213,7 +210,6 @@ GET  /api/holdings
   ]
 
 PUT  /api/holdings/{symbol}
-  Header: Authorization: Bearer <token>
   Body: {
     "cost_price"?: number,    # > 0
     "quantity"?: integer,     # > 0
@@ -226,7 +222,6 @@ PUT  /api/holdings/{symbol}
 → 404 if symbol not in holdings
 
 POST /api/reload
-  Header: Authorization: Bearer <token>
 → 200 {"jobs": 9, "holdings": 2, "t_symbols": 2}
 → 502 if socket reload fails
 ```
@@ -263,22 +258,21 @@ PUT /api/holdings/600522 {cost_price: 62.5}
 
 ## 安全
 
-- Bearer Token：32 字节随机十六进制，存 `.env`，权限 600
-- 监听 `0.0.0.0:8765`：仅靠 token 鉴权
+- **无鉴权**：用户决定纯公开访问（个人单机自用，IP 不易猜到且持仓非高敏）
+- 监听 `0.0.0.0:8765`：任何人能访问 IP:端口都能编辑
 - 写文件路径白名单：仅 `holdings.local.json`（不允许改 monitor JSON；
   monitor 配置涉及更复杂字段，留给 ssh 改）
-- 日志记录所有写操作 + 来源 IP
+- 日志记录所有写操作 + 来源 IP（审计追溯）
+- **缓解措施**：VPS 安全组可限制 IP 段；后续可加 basic auth
 
 ## 部署
 
 1. 本地：
    - 推送代码到 origin + vps
-   - 生成 token：`openssl rand -hex 32`
-   - 写入 `.env`：`A_TRADE_WEB_TOKEN=<token>`
-   - pre-push hook 自动同步 `.env` 到 VPS
+   - pre-push hook 同步 `.env` 到 VPS（无 token 字段）
 2. VPS：
    - 部署 `a-trade-web.service`：`cp deploy/a-trade-web.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now a-trade-web`
-   - 验证：`curl http://localhost:8765/api/health`
+   - 验证：`curl http://<public-ip>:8765/api/health`
 
 ## 测试
 
@@ -295,7 +289,7 @@ PUT /api/holdings/600522 {cost_price: 62.5}
 | 风险 | 缓解 |
 |---|---|
 | 手机 4G/5G 访问公网 IP 不稳定 | 文档建议加入主屏并配置书签；可选后续接 frp / cloudflare tunnel |
-| 端口 8765 暴露公网 | 仅靠 token，token 强度 32 字节随机；可接受个人使用 |
+| 端口 8765 暴露公网 | 用户选择无鉴权；个人单机风险低；可后续加 IP 白名单或 basic auth |
 | scheduler reload 时正推送 | reload 只重建 symbols 列表，不打断正在跑的 APScheduler job；下一次 T 扫描生效 |
 | socket 权限 | 0660 + socket 文件归 root；web service 也以 root 跑避免跨用户问题 |
 
