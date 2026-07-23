@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>a-trade 持仓配置</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <h1>⚙️ a-trade 持仓配置</h1>
+    <div class="toolbar">
+      <input id="token-input" type="password" placeholder="Bearer Token (可选)" style="flex:1">
+      <button id="save-token">保存 Token</button>
+      <button id="reload-btn" class="primary">🔄 重载配置</button>
+    </div>
+  </header>
+  <main>
+    <div id="list"></div>
+    <p class="muted">修改后点保存；改完点"重载配置"让调度器立即生效</p>
+  </main>
+  <div id="status" class="status"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
