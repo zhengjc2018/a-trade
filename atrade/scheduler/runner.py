@@ -292,6 +292,50 @@ class DailyScheduler:
         except Exception as e:
             logger.error(f"❌ 做T推送失败，告警不提交以便重试: {e}")
 
+    def reload_from_disk(self) -> dict:
+        """重读 holdings + monitor JSON，更新内存中的 holdings、watch 列表、
+        T 监控 symbols 与报告器持有。不重启 APScheduler。
+        """
+        from atrade.config import load_holdings_with_meta, load_monitor_config
+        from atrade.monitor.t_monitor import TMonitorItem
+
+        holdings_meta = load_holdings_with_meta()
+        monitor = load_monitor_config()
+
+        self.holdings = holdings_meta["holdings"]
+        self.watch_symbols = [h["symbol"] for h in self.holdings]
+        self.watch_keywords = holdings_meta.get("watch_keywords") or []
+
+        disabled = set(holdings_meta.get("disabled_symbols") or [])
+        t_symbols_raw = (monitor.get("t_monitor") or {}).get("symbols") or []
+        t_symbols_filtered = [s for s in t_symbols_raw if s.get("symbol") not in disabled]
+        self.t_runner.config.symbols = [
+            TMonitorItem(
+                symbol=str(s["symbol"]).zfill(6),
+                name=str(s.get("name", "")),
+                cost_price=float(s.get("cost_price", 0.0)),
+                quantity=int(s.get("quantity", 0)),
+                note=str(s.get("note", "")),
+            )
+            for s in t_symbols_filtered
+        ]
+
+        if hasattr(self, "report_gen") and self.report_gen is not None:
+            self.report_gen.holdings = self.holdings
+            self.report_gen.watch_symbols = self.watch_symbols
+            self.report_gen.watch_keywords = self.watch_keywords
+
+        logger.info(
+            f"🔁 配置已重载: holdings={len(self.holdings)} "
+            f"t_symbols={len(self.t_runner.config.symbols)} "
+            f"disabled={len(disabled)}"
+        )
+        return {
+            "holdings": len(self.holdings),
+            "t_symbols": len(self.t_runner.config.symbols),
+            "disabled": len(disabled),
+        }
+
     def _job_delivery_heartbeat(self):
         if not self.calendar.is_trade_day():
             return
