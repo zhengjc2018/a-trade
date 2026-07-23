@@ -2,15 +2,11 @@
 (function () {
   const TOKEN_KEY = "a_trade_web_token";
 
-  function token() {
-    return localStorage.getItem(TOKEN_KEY) || "";
-  }
-
+  function token() { return localStorage.getItem(TOKEN_KEY) || ""; }
   function setToken(t) {
     if (t) localStorage.setItem(TOKEN_KEY, t);
     else localStorage.removeItem(TOKEN_KEY);
   }
-
   function authHeaders() {
     const t = token();
     return t ? { Authorization: "Bearer " + t } : {};
@@ -56,6 +52,7 @@
       '<div class="actions">' +
         '<button class="primary save">保存</button>' +
         '<button class="toggle">' + (h.enabled === false ? "启用" : "停用") + '</button>' +
+        '<button class="danger delete">🗑 删除</button>' +
       '</div>';
 
     card.querySelector(".save").onclick = async function () {
@@ -77,8 +74,7 @@
     card.querySelector(".toggle").onclick = async function () {
       const newEnabled = h.enabled === false;
       const r = await fetchJSON("/api/holdings/" + sym, {
-        method: "PUT",
-        body: { enabled: newEnabled },
+        method: "PUT", body: { enabled: newEnabled },
       });
       if (r.ok) {
         toast(sym + " 已" + (newEnabled ? "启用" : "停用"), "ok");
@@ -88,10 +84,20 @@
       }
     };
 
+    card.querySelector(".delete").onclick = async function () {
+      if (!confirm("确认删除 " + sym + "？")) return;
+      const r = await fetchJSON("/api/holdings/" + sym, { method: "DELETE" });
+      if (r.ok) {
+        toast(sym + " 已删除", "ok");
+        await refresh();
+      } else {
+        toast("删除失败: " + r.status + " " + JSON.stringify(r.data), "err");
+      }
+    };
+
     card.querySelector(".enabled-toggle").onchange = async function (e) {
       const r = await fetchJSON("/api/holdings/" + sym, {
-        method: "PUT",
-        body: { enabled: e.target.checked },
+        method: "PUT", body: { enabled: e.target.checked },
       });
       if (!r.ok) toast("切换失败: " + r.status, "err");
       await refresh();
@@ -119,6 +125,40 @@
     }
   }
 
+  function openAddDialog() {
+    document.getElementById("add-symbol").value = "";
+    document.getElementById("add-name").value = "";
+    document.getElementById("add-cost").value = "";
+    document.getElementById("add-qty").value = "";
+    document.getElementById("add-date").value = "";
+    document.getElementById("add-note").value = "";
+    document.getElementById("add-dialog").style.display = "flex";
+  }
+
+  function closeAddDialog() {
+    document.getElementById("add-dialog").style.display = "none";
+  }
+
+  async function submitAdd() {
+    const sym = document.getElementById("add-symbol").value.trim();
+    const body = {
+      symbol: sym,
+      name: document.getElementById("add-name").value.trim() || sym,
+      cost_price: parseFloat(document.getElementById("add-cost").value),
+      quantity: parseInt(document.getElementById("add-qty").value, 10),
+      buy_date: document.getElementById("add-date").value.trim(),
+      note: document.getElementById("add-note").value.trim(),
+    };
+    const r = await fetchJSON("/api/holdings", { method: "POST", body: body });
+    if (r.ok) {
+      toast(body.symbol + " 已新增", "ok");
+      closeAddDialog();
+      await refresh();
+    } else {
+      toast("新增失败: " + r.status + " " + JSON.stringify(r.data), "err");
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const tokInput = document.getElementById("token-input");
     tokInput.value = token();
@@ -128,6 +168,9 @@
       refresh();
     };
     document.getElementById("reload-btn").onclick = reloadConfig;
+    document.getElementById("add-btn").onclick = openAddDialog;
+    document.getElementById("add-cancel").onclick = closeAddDialog;
+    document.getElementById("add-submit").onclick = submitAdd;
     refresh();
   });
 })();

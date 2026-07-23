@@ -50,6 +50,44 @@ def _write_unlocked(meta: dict) -> None:
     os.replace(tmp, path)
 
 
+def create_holding(holding: dict) -> dict:
+    """新增一只持仓。holding 必须含 symbol/cost_price/quantity。
+
+    返回：归一化后的 holding dict（含 updated_at）。
+    抛 ValueError：symbol 已存在 / 字段非法。
+    """
+    validated = validate_holding(holding)
+    sym = validated["symbol"]
+    with _lock:
+        meta = read_holdings()
+        existing = {str(h.get("symbol", "")).zfill(6) for h in meta["holdings"]}
+        if sym in existing:
+            raise ValueError(f"symbol 已存在: {sym}")
+        validated["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        meta["holdings"].append(validated)
+        _write_unlocked(meta)
+        return validated
+
+
+def delete_holding(symbol: str) -> str:
+    """删除指定持仓（同时从 disabled_symbols 中移除）。"""
+    sym = str(symbol).zfill(6)
+    with _lock:
+        meta = read_holdings()
+        before = len(meta["holdings"])
+        meta["holdings"] = [
+            h for h in meta["holdings"]
+            if str(h.get("symbol", "")).zfill(6) != sym
+        ]
+        if len(meta["holdings"]) == before:
+            raise KeyError(f"symbol not in holdings: {symbol}")
+        disabled = {str(s).zfill(6) for s in meta.get("disabled_symbols") or []}
+        disabled.discard(sym)
+        meta["disabled_symbols"] = sorted(disabled)
+        _write_unlocked(meta)
+        return sym
+
+
 def update_holding(symbol: str, patch: dict) -> dict:
     """读 → 改 → 写。返回更新后的 holding。"""
     with _lock:
@@ -68,6 +106,42 @@ def update_holding(symbol: str, patch: dict) -> dict:
         )
         _write_unlocked(meta)
         return meta["holdings"][target_idx]
+
+
+_HOLDING_REQUIRED_FIELDS = {"symbol", "name", "cost_price", "quantity"}
+
+
+def validate_holding(holding: dict) -> dict:
+    """校验新增持仓的字段，返回归一化 dict。"""
+    if not isinstance(holding, dict):
+        raise ValueError("holding 必须是 dict")
+    missing = _HOLDING_REQUIRED_FIELDS - set(holding.keys())
+    if missing:
+        raise ValueError(f"holding 缺少必需字段: {sorted(missing)}")
+    sym = str(holding["symbol"]).zfill(6)
+    import re as _re
+    if not _re.match(r"^\d{6}$", sym):
+        raise ValueError(f"symbol 必须是 6 位数字: {holding['symbol']!r}")
+    cost = holding["cost_price"]
+    if not isinstance(cost, (int, float)) or cost <= 0:
+        raise ValueError(f"cost_price 必须 > 0: {cost!r}")
+    qty = holding["quantity"]
+    if isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+        raise ValueError(f"quantity 必须为正整数: {qty!r}")
+    note = str(holding.get("note", ""))
+    if len(note) > 200:
+        raise ValueError("note 不能超过 200 字符")
+    buy_date = str(holding.get("buy_date", ""))
+    if buy_date and len(buy_date) > 10:
+        raise ValueError(f"buy_date 格式错误: {buy_date!r}")
+    return {
+        "symbol": sym,
+        "name": str(holding["name"]),
+        "cost_price": float(cost),
+        "quantity": qty,
+        "buy_date": buy_date,
+        "note": note,
+    }
 
 
 _ALLOWED_FIELDS = {"cost_price", "quantity", "buy_date", "note", "enabled"}

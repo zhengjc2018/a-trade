@@ -12,7 +12,8 @@
     <div class="toolbar">
       <input id="token-input" type="password" placeholder="Bearer Token (可选)" style="flex:1">
       <button id="save-token">保存 Token</button>
-      <button id="reload-btn" class="primary">🔄 重载配置</button>
+      <button id="add-btn" class="primary">+ 新增持仓</button>
+      <button id="reload-btn">🔄 重载配置</button>
     </div>
   </header>
   <main>
@@ -20,6 +21,24 @@
     <p class="muted">修改后点保存；改完点"重载配置"让调度器立即生效</p>
   </main>
   <div id="status" class="status"></div>
+
+  <!-- 新增持仓对话框 -->
+  <div id="add-dialog" class="dialog" style="display:none">
+    <div class="dialog-box">
+      <h2>新增持仓</h2>
+      <div class="row"><label>代码</label><input id="add-symbol" maxlength="6" placeholder="6 位数字"></div>
+      <div class="row"><label>名称</label><input id="add-name" placeholder="自动按代码查询"></div>
+      <div class="row"><label>成本价</label><input id="add-cost" type="number" step="0.01"></div>
+      <div class="row"><label>数量</label><input id="add-qty" type="number"></div>
+      <div class="row"><label>买入日</label><input id="add-date" placeholder="YYYY-MM-DD"></div>
+      <div class="row"><label>备注</label><input id="add-note" maxlength="200"></div>
+      <div class="actions">
+        <button id="add-submit" class="primary">提交</button>
+        <button id="add-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

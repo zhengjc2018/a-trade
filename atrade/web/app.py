@@ -67,6 +67,28 @@ def get_holdings() -> list[dict]:
     return out
 
 
+@app.post("/api/holdings", dependencies=[Depends(require_bearer)], status_code=status.HTTP_201_CREATED)
+def post_holding(holding: dict) -> dict:
+    """新增一只持仓。Body: {symbol, name, cost_price, quantity, buy_date?, note?}"""
+    try:
+        validated = storage.create_holding(holding)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    return validated
+
+
+@app.delete("/api/holdings/{symbol}", dependencies=[Depends(require_bearer)])
+def delete_holding(symbol: str) -> dict:
+    """删除指定持仓。"""
+    try:
+        removed = storage.delete_holding(symbol)
+    except KeyError:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"symbol not found: {symbol}"
+        ) from None
+    return {"deleted": removed}
+
+
 @app.put("/api/holdings/{symbol}", dependencies=[Depends(require_bearer)])
 def put_holding(symbol: str, patch: dict) -> dict:
     try:
