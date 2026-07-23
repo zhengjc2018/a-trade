@@ -97,6 +97,67 @@ class ReportGenerator:
         lines.append("_⚠️ 自动生成，仅供参考_")
         return "\n".join(lines)
 
+    def generate_auction_report(self) -> str:
+        """9:25 竞价分析：板块榜 TOP 5 + 领涨股 TOP 10。"""
+        from datetime import datetime
+
+        from atrade.analyzer.auction import fetch_sector_auction, fetch_top_gainers
+        now = datetime.now()
+        sectors = fetch_sector_auction(top_n=5)
+        leaders = fetch_top_gainers(top_n=10)
+
+        if not sectors:
+            return "# 📈 竞价分析\n\n_暂无数据（可能尚未开盘或数据源失败）_"
+
+        # 头部结论：找最强的方向
+        top = sectors[0]
+        if top.change_pct >= 3:
+            conclusion = f"🟢 竞价强势：{top.name} {top.change_pct:+.2f}%"
+        elif top.change_pct >= 1:
+            conclusion = f"🟡 竞价偏强：{top.name} {top.change_pct:+.2f}%"
+        elif top.change_pct >= 0:
+            conclusion = f"⚪ 竞价平淡：{top.name} {top.change_pct:+.2f}%"
+        else:
+            conclusion = f"🔴 竞价走弱：{top.name} {top.change_pct:+.2f}%"
+
+        lines = [
+            "# 📈 集合竞价分析",
+            f"_{now.strftime('%Y-%m-%d %H:%M')}_",
+            "",
+            conclusion,
+            "",
+            "## 🔥 板块榜 TOP 5",
+            "",
+            "| 板块 | 涨幅 | 领涨股 | 个股涨幅 |",
+            "|---|---:|---|---|",
+        ]
+        for s in sectors:
+            lines.append(
+                f"| {s.name} | {s.change_pct:+.2f}% | "
+                f"{s.leader_name}({s.leader_symbol}) | "
+                f"{s.leader_change_pct:+.2f}% |"
+            )
+
+        lines.extend([
+            "",
+            "## 🚀 领涨股 TOP 10",
+            "",
+            "| 代码 | 名称 | 涨幅 | 所属板块 |",
+            "|---|---|---:|---|",
+        ])
+        for ld in leaders:
+            lines.append(
+                f"| {ld['symbol']} | {ld['name']} | "
+                f"{ld['change_pct']:+.2f}% | {ld['sector']} |"
+            )
+
+        lines.extend([
+            "",
+            "---",
+            "_⚠️ 仅供参考，投资有风险_",
+        ])
+        return "\n".join(lines)
+
     def generate_noon_report(self) -> str:
         now = datetime.now()
         lines = [

@@ -114,6 +114,16 @@ class DailyScheduler:
 
     def _setup_jobs(self):
         """注册定时任务。"""
+        # 集合竞价分析：每个交易日 9:25（集合竞价结束后）
+        self.scheduler.add_job(
+            self._job_auction_analysis,
+            CronTrigger(hour=9, minute=25),
+            id="auction_analysis",
+            name="集合竞价分析",
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
         # 早盘快讯：每个交易日 8:00
         self.scheduler.add_job(
             self._job_delivery_heartbeat,
@@ -181,6 +191,7 @@ class DailyScheduler:
 
         for hour, minute, task_name, callback in [
             (8, 5, "morning_brief", self._job_morning_brief),
+            (9, 30, "auction_analysis", self._job_auction_analysis),
             (12, 35, "noon_report", self._job_noon_report),
             (15, 35, "closing_report", self._job_closing_report),
             (17, 5, "holdings_news", self._job_holdings_news),
@@ -268,6 +279,14 @@ class DailyScheduler:
             return
         md = "# 📰 持仓股新闻汇总\n\n" + collector.to_markdown(news, max_len=250)
         return self._deliver("holdings_news", "持仓新闻汇总", md)
+
+    def _job_auction_analysis(self):
+        if not self.calendar.is_trade_day():
+            return
+        logger.info("⏰ 触发: 集合竞价分析")
+        report = self.report_gen.generate_auction_report()
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver("auction_analysis", "📈 a-trade 竞价分析", report, suffix)
 
     def _job_screen_monitor(self):
         if not self.calendar.is_open_for_intraday_scan():
@@ -440,6 +459,7 @@ class DailyScheduler:
         now = datetime.now()
         tasks = [
             RecoveryTask("morning_brief", time(8, 0), time(10, 0), self._job_morning_brief),
+            RecoveryTask("auction_analysis", time(9, 25), time(10, 0), self._job_auction_analysis),
             RecoveryTask("noon_report", time(12, 30), time(14, 0), self._job_noon_report),
             RecoveryTask("closing_report", time(15, 30), time(23, 59), self._job_closing_report),
             RecoveryTask("holdings_news", time(17, 0), time(23, 59), self._job_holdings_news),
