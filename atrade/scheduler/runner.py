@@ -34,6 +34,11 @@ from atrade.scheduler.recovery import RecoveryTask, recover_missed_tasks
 _log = logging.get_logger()
 load_dotenv()
 
+# 热重载 socket 路径：web 服务通过这个 unix socket 通知 scheduler 重读配置
+_RELOAD_SOCK_PATH = os.getenv(
+    "A_TRADE_RELOAD_SOCK", "/var/run/a-trade-reload.sock"
+)
+
 # 配置文件统一由 atrade.config 加载；本模块不再直接读 JSON。
 
 
@@ -292,6 +297,51 @@ class DailyScheduler:
         except Exception as e:
             logger.error(f"❌ 做T推送失败，告警不提交以便重试: {e}")
 
+    def _start_reload_socket(self) -> None:
+        """后台启动 Unix socket 服务，接收 reload 命令。"""
+        import socketserver
+        import threading
+
+        sock_path = _RELOAD_SOCK_PATH
+        if os.path.exists(sock_path):
+            try:
+                os.remove(sock_path)
+            except OSError:
+                pass
+
+        outer = self  # capture for handler closure
+
+        class _ReloadHandler(socketserver.StreamRequestHandler):
+            def handle(self):
+                try:
+                    line = self.rfile.readline()
+                    cmd = line.strip().decode("utf-8", errors="ignore") if line else ""
+                    if cmd == "reload":
+                        try:
+                            result = outer.reload_from_disk()
+                            self.wfile.write(f"OK {result}\n".encode())
+                        except Exception as e:
+                            self.wfile.write(f"ERR reload failed: {e}\n".encode())
+                    else:
+                        self.wfile.write(b"ERR unknown command\n")
+                except Exception as e:
+                    try:
+                        self.wfile.write(f"ERR handler: {e}\n".encode())
+                    except Exception:
+                        pass
+
+        class _ThreadedUnixServer(socketserver.ThreadingUnixStreamServer):
+            daemon_threads = True
+
+        server = _ThreadedUnixServer(sock_path, _ReloadHandler)
+        try:
+            os.chmod(sock_path, 0o660)
+        except OSError:
+            pass
+        t = threading.Thread(target=server.serve_forever, daemon=True, name="reload-socket")
+        t.start()
+        logger.info(f"🔌 reload socket listening at {sock_path}")
+
     def reload_from_disk(self) -> dict:
         """重读 holdings + monitor JSON，更新内存中的 holdings、watch 列表、
         T 监控 symbols 与报告器持有。不重启 APScheduler。
@@ -435,6 +485,7 @@ class DailyScheduler:
         # 启动调度器
         self.scheduler.start()
         logger.success("✅ 调度器已启动")
+        self._start_reload_socket()
         self._print_next_jobs()
         recovered = self._recover_missed_tasks()
         if recovered:
