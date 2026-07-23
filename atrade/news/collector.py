@@ -48,8 +48,8 @@ class NewsCollector:
                     url=str(row.get("链接", "")),
                     category="macro",
                 ))
-            logger.info(f"✅ 财经早餐: {len(items)} 条")
-            return items
+            logger.info(f"✅ 财经早餐: 原始 {len(items)} 条，今天 {len(self.filter_today_only(items))} 条")
+            return self.filter_today_only(items)
         except Exception as e:
             logger.error(f"❌ 财经早餐失败: {e}")
             return []
@@ -70,8 +70,8 @@ class NewsCollector:
                     category="stock",
                     related_symbols=[symbol],
                 ))
-            logger.info(f"✅ 个股新闻 {symbol}: {len(items)} 条")
-            return items
+            logger.info(f"✅ 个股新闻 {symbol}: 原始 {len(items)} 条，今天 {len(self.filter_today_only(items))} 条")
+            return self.filter_today_only(items)
         except Exception as e:
             logger.error(f"❌ 个股新闻 {symbol} 失败: {e}")
             return []
@@ -100,8 +100,8 @@ class NewsCollector:
                     url=str(row.get("链接", "")),
                     category="global",
                 ))
-            logger.info(f"✅ 全球快讯: {len(items)} 条")
-            return items
+            logger.info(f"✅ 全球快讯: 原始 {len(items)} 条，今天 {len(self.filter_today_only(items))} 条")
+            return self.filter_today_only(items)
         except Exception as e:
             logger.error(f"❌ 全球快讯失败: {e}")
             return []
@@ -134,6 +134,11 @@ class NewsCollector:
             seen.add(item.title)
             unique.append(item)
         return unique
+
+    def filter_today_only(self, items: list[NewsItem]) -> list[NewsItem]:
+        """只保留今天（按本地日期）发布的新闻。"""
+        today = datetime.now().date()
+        return [item for item in items if item.publish_time.date() == today]
 
     @staticmethod
     def _parse_time(s: str) -> datetime:
