@@ -191,6 +191,17 @@
     container.appendChild(ul);
   }
 
+  async function backfillNames() {
+    const r = await fetchJSON("/api/holdings/backfill-names", { method: "POST" });
+    if (r.ok) {
+      const updated = r.data.holdings ? r.data.holdings.length : (r.data.updated || 0);
+      toast("名称已更新: " + updated + " 条", "ok");
+      await refresh();
+    } else {
+      toast("回填失败: " + r.status + " " + JSON.stringify(r.data), "err");
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const tokInput = document.getElementById("token-input");
     tokInput.value = token();
@@ -202,6 +213,7 @@
     document.getElementById("reload-btn").onclick = function () {
       reloadConfig().then(refreshTrades);
     };
+    document.getElementById("backfill-btn").onclick = backfillNames;
     document.getElementById("add-btn").onclick = openAddDialog;
     document.getElementById("add-cancel").onclick = closeAddDialog;
     document.getElementById("add-submit").onclick = function () {

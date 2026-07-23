@@ -69,7 +69,17 @@ def get_holdings() -> list[dict]:
 
 @app.post("/api/holdings", dependencies=[Depends(require_bearer)], status_code=status.HTTP_201_CREATED)
 def post_holding(holding: dict) -> dict:
-    """新增一只持仓。Body: {symbol, name, cost_price, quantity, buy_date?, note?}"""
+    """新增一只持仓。Body: {symbol, name, cost_price, quantity, buy_date?, note?}
+
+    若 name 缺失或等于 symbol，自动从实时行情查名。
+    """
+    sym = str(holding.get("symbol", "")).zfill(6)
+    provided_name = str(holding.get("name", "")).strip()
+    if not provided_name or provided_name == sym:
+        from .quote_lookup import lookup_quote
+        q = lookup_quote(sym)
+        if q and q.get("name"):
+            holding["name"] = q["name"]
     try:
         validated = storage.create_holding(holding)
     except ValueError as e:
@@ -128,6 +138,28 @@ def put_holding(symbol: str, patch: dict) -> dict:
         updated = target
 
     return updated
+
+
+@app.get("/api/quote/{symbol}", dependencies=[Depends(require_bearer)])
+def get_quote(symbol: str) -> dict:
+    """实时查询某只股票的行情（用于 UI 自动回填名称）。"""
+    from .quote_lookup import lookup_quote
+    quote = lookup_quote(symbol)
+    if quote is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"无法获取 {symbol} 行情")
+    return quote
+
+
+@app.post("/api/holdings/backfill-names", dependencies=[Depends(require_bearer)])
+def post_backfill_names() -> dict:
+    """扫描所有 holdings，缺失的 name 自动从行情查询回填。"""
+    from .quote_lookup import backfill_names
+    meta = storage.read_holdings()
+    updated = backfill_names(meta)
+    return {
+        "updated": len(updated.get("holdings", [])),
+        "holdings": updated.get("holdings", []),
+    }
 
 
 @app.get("/api/t-trades", dependencies=[Depends(require_bearer)])
