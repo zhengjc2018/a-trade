@@ -14,7 +14,31 @@
       <button id="save-token">保存 Token</button>
       <button id="add-btn" class="primary">+ 新增持仓</button>
       <button id="backfill-btn">🔍 自动补名称</button>
+      <button id="backtest-btn">📊 回测</button>
       <button id="reload-btn">🔄 重载配置</button>
+    </div>
+
+    <!-- 最近回测列表 -->
+    <h2 style="margin-top:24px">🧪 最近回测</h2>
+    <div id="backtest-list"></div>
+
+    <!-- 回测对话框 -->
+    <div id="backtest-dialog" class="dialog" style="display:none">
+      <div class="dialog-box">
+        <h2>回测 / 参数扫描</h2>
+        <div class="row"><label>代码</label><input id="bt-symbol" maxlength="6" placeholder="6 位数字"></div>
+        <div class="row"><label>成本价</label><input id="bt-cost" type="number" step="0.01"></div>
+        <div class="row"><label>数量(股)</label><input id="bt-qty" type="number" step="1"></div>
+        <div class="row"><label>起始日</label><input id="bt-start" placeholder="2024-01-01"></div>
+        <div class="row"><label>结束日</label><input id="bt-end" placeholder="2026-07-25"></div>
+        <div class="row"><label><input id="bt-sweep" type="checkbox"> 跑参数扫描</label></div>
+        <div class="row"><label><input id="bt-push" type="checkbox" checked> 跑完推送钉钉</label></div>
+        <div class="actions">
+          <button id="bt-submit" class="primary">启动</button>
+          <button id="bt-portfolio">组合(全部持仓)</button>
+          <button id="bt-cancel">取消</button>
+        </div>
+      </div>
     </div>
   </header>
   <main>

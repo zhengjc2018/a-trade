@@ -165,6 +165,8 @@ class T0Simulator:
         slippage_pct: float = 0.0005,
         force_close_loss_pct: float = 0.05,
         signal_cooldown_days: int = 5,
+        take_profit_pct: Optional[float] = None,
+        stop_loss_pct: Optional[float] = None,
     ):
         self.history = HistoryProvider()
         self.engine = SignalEngine()
@@ -178,6 +180,13 @@ class T0Simulator:
         self.slippage_pct = slippage_pct
         self.force_close_loss_pct = force_close_loss_pct
         self.signal_cooldown_days = signal_cooldown_days
+        # 锁定止盈止损阈值（向后兼容：None 表示沿用 force_close_loss_pct 与原逻辑）
+        self.take_profit_pct = (
+            float(take_profit_pct) if take_profit_pct is not None else None
+        )
+        self.stop_loss_pct = (
+            float(stop_loss_pct) if stop_loss_pct is not None else None
+        )
 
     # ---------- 工具 ----------
     def _slippage_buy(self, price: float) -> float:
@@ -314,10 +323,38 @@ class T0Simulator:
             t_holdings = pos.t_holdings_via_state()
             if t_holdings > 0 and pos.t_avg_cost > 0 and pos.locked_quantity == 0:
                 unrealized_pct = (cur_price - pos.t_avg_cost) / pos.t_avg_cost
-                if unrealized_pct <= -self.force_close_loss_pct:
+                effective_stop_loss = (
+                    self.stop_loss_pct
+                    if self.stop_loss_pct is not None
+                    else self.force_close_loss_pct
+                )
+                if unrealized_pct <= -effective_stop_loss:
                     self._do_sell(
                         pos, cur_price, t_holdings,
                         today, cost_price, "强制止损",
+                        trades,
+                    )
+                    fee_total += trades[-1].fee
+                    pos.t_avg_cost = 0.0
+                    pos.open_cycle = False
+                    if trades[-1].profit >= 0:
+                        t_win += 1
+                    else:
+                        t_loss += 1
+                    peak_cash_usage = max(peak_cash_usage, -pos.cash)
+
+            # 4.5 锁利检查：T 仓浮盈 ≥ take_profit_pct 时卖出（仅 take_profit_pct 非空时启用）
+            if (
+                self.take_profit_pct is not None
+                and t_holdings > 0
+                and pos.t_avg_cost > 0
+                and pos.locked_quantity == 0
+            ):
+                unrealized_pct_tp = (cur_price - pos.t_avg_cost) / pos.t_avg_cost
+                if unrealized_pct_tp >= self.take_profit_pct:
+                    self._do_sell(
+                        pos, cur_price, t_holdings,
+                        today, cost_price, "T 仓锁利",
                         trades,
                     )
                     fee_total += trades[-1].fee

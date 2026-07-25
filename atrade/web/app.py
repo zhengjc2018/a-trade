@@ -220,5 +220,11 @@ def root() -> FileResponse:
     return FileResponse(_INDEX_HTML, media_type="text/html")
 
 
+# 注册回测 API（包含 /run /portfolio /jobs /report 4 个端点）
+from atrade.backtest.api import router as backtest_router  # noqa: E402
+
+app.include_router(backtest_router, dependencies=[Depends(require_bearer)])
+
+
 if _STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")

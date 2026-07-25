@@ -222,6 +222,96 @@
     }
   }
 
+
+  // ===== 回测对话框 =====
+  function openBacktestDialog() {
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById("bt-symbol").value = "";
+    document.getElementById("bt-cost").value = "";
+    document.getElementById("bt-qty").value = "";
+    document.getElementById("bt-start").value = "2024-01-01";
+    document.getElementById("bt-end").value = today;
+    document.getElementById("bt-sweep").checked = false;
+    document.getElementById("bt-push").checked = true;
+    document.getElementById("backtest-dialog").style.display = "flex";
+  }
+
+  function closeBacktestDialog() {
+    document.getElementById("backtest-dialog").style.display = "none";
+  }
+
+  async function submitBacktest(portfolio) {
+    closeBacktestDialog();
+    const today = new Date().toISOString().slice(0, 10);
+    let url, body;
+    if (portfolio) {
+      url = "/api/backtest/portfolio";
+      body = {
+        start_date: document.getElementById("bt-start").value || "2024-01-01",
+        end_date: document.getElementById("bt-end").value || today,
+        push: document.getElementById("bt-push").checked,
+      };
+    } else {
+      const symbol = document.getElementById("bt-symbol").value.trim();
+      const cost = parseFloat(document.getElementById("bt-cost").value);
+      const qty = parseInt(document.getElementById("bt-qty").value, 10);
+      if (!/^\d{6}$/.test(symbol)) {
+        toast("代码必须是 6 位数字", "err"); return;
+      }
+      if (!(cost > 0) || !(qty > 0)) {
+        toast("成本 / 数量必须 > 0", "err"); return;
+      }
+      url = "/api/backtest/run";
+      body = {
+        symbol: symbol,
+        cost_price: cost,
+        quantity: qty,
+        start_date: document.getElementById("bt-start").value || "2024-01-01",
+        end_date: document.getElementById("bt-end").value || today,
+        sweep: document.getElementById("bt-sweep").checked,
+        push: document.getElementById("bt-push").checked,
+      };
+    }
+    const r = await fetchJSON(url, { method: "POST", body: body });
+    if (r.ok) {
+      toast("回测任务已提交：" + r.data.job_id, "ok");
+    } else {
+      toast("回测失败：" + r.status + " " + JSON.stringify(r.data), "err");
+    }
+  }
+
+  async function refreshBacktests() {
+    const r = await fetchJSON("/api/backtest/jobs?limit=10");
+    const box = document.getElementById("backtest-list");
+    if (!r.ok) {
+      box.innerHTML = "<p class=\"muted\">回测历史加载失败：" + r.status + "</p>";
+      return;
+    }
+    if (!r.data || !r.data.length) {
+      box.innerHTML = "<p class=\"muted\">暂无回测任务</p>";
+      return;
+    }
+    const rows = r.data.map(function (j) {
+      const summary = j.summary || {};
+      const badge =
+        j.status === "completed" ? "🟢" :
+        j.status === "running" ? "🟡" :
+        j.status === "failed" ? "🔴" : "⚪";
+      const detail = summary.best
+        ? "最佳 +" + (summary.best.take_profit_pct * 100).toFixed(1) +
+          "% / -" + (summary.best.stop_loss_pct * 100).toFixed(1) +
+          "% 胜率 " + (summary.best.win_rate * 100).toFixed(0) + "%"
+        : (summary.net_t_profit != null ? "T 净额 " + summary.net_t_profit : "");
+      return "<div class=\"card\"><div class=\"card-head\">" +
+        "<div class=\"card-title\">" + badge + " " + (j.symbol || "(组合)") + " " +
+        (j.type === "sweep" ? "[Sweep]" : j.type === "portfolio" ? "[组合]" : "[单股]") +
+        "</div><div class=\"muted\">" + j.created_at + "</div></div>" +
+        "<div class=\"row\">状态 " + j.status +
+        (detail ? " ｜ " + detail : "") + "</div></div>";
+    }).join("");
+    box.innerHTML = rows;
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const tokInput = document.getElementById("token-input");
     tokInput.value = token();
@@ -239,6 +329,18 @@
     document.getElementById("add-submit").onclick = function () {
       submitAdd().then(refreshTrades);
     };
+
+    // ===== 回测 =====
+    document.getElementById("backtest-btn").onclick = openBacktestDialog;
+    document.getElementById("bt-cancel").onclick = closeBacktestDialog;
+    document.getElementById("bt-submit").onclick = function () {
+      submitBacktest(false).then(refreshBacktests);
+    };
+    document.getElementById("bt-portfolio").onclick = function () {
+      submitBacktest(true).then(refreshBacktests);
+    };
+    refreshBacktests();
+
     refresh();
     refreshTrades();
   });

@@ -164,3 +164,101 @@ def test_signal_cooldown_days_stored():
     """cooldown 参数应被正确存储。"""
     sim = T0Simulator(signal_cooldown_days=3)
     assert sim.signal_cooldown_days == 3
+
+
+# ---------- take_profit_pct / stop_loss_pct 注入测试 ----------
+
+def _trending_df(n: int, daily_returns: list, base_price: float = 100.0):
+    """构造 daily_returns 是每个交易日收益率列表的 df（首日 0）。"""
+
+    import pandas as pd
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    assert len(daily_returns) == n
+    closes = []
+    cum = base_price
+    for r in daily_returns:
+        cum *= (1 + r)
+        closes.append(cum)
+    opens = [base_price] + closes[:-1]
+    highs = [c * 1.005 for c in closes]
+    lows = [c * 0.995 for c in closes]
+    return pd.DataFrame({
+        "date": dates.strftime("%Y-%m-%d"),
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "volume": [1000000] * n,
+    })
+
+
+class _FakeHistory:
+    """返回一个静态 df，不依赖外网数据。"""
+
+    def __init__(self, df):
+        self._df = df
+
+    def fetch_with_cache(self, *args, **kwargs):
+        return self._df.copy()
+
+
+def _make_sim_with_df(df, **kwargs):
+    sim = T0Simulator(
+        scale="1d",
+        datalen=len(df),
+        fee_commission=0.0001,
+        fee_commission_min=0.01,
+        fee_stamp_duty_sell=0.0001,
+        slippage_pct=0.0,  # 测试关掉滑点
+        **kwargs,
+    )
+    sim.history = _FakeHistory(df)
+    return sim
+
+
+def _always_buy_signal():
+    from atrade.signals import Signal, SignalStrength, SignalType
+    def _scan(self, symbol, df):
+        if len(df) < 35:
+            return []
+        return [
+            Signal(
+                symbol="000001",
+                signal_type=SignalType.BUY,
+                strength=SignalStrength.WEAK,
+                name="fake-buy",
+                reason="test buy",
+                trigger_price=float(df.iloc[-1]["close"]),
+                factor_hits=["fake"],
+            )
+        ]
+    return _scan
+
+
+def test_take_profit_kicks_in(monkeypatch):
+    """每日 +1%，take_profit=0.02 → 必然触发。"""
+    monkeypatch.setattr("atrade.signals.SignalEngine.scan", _always_buy_signal())
+    df = _trending_df(60, [0.01] * 60, base_price=100.0)
+    sim = _make_sim_with_df(df, take_profit_pct=0.02)
+    result = sim.run("000001", cost_price=100.0, quantity=100,
+                     start_date="2026-01-01", end_date="2026-04-15",
+                     force_eod_close=False)
+    signals = [t.signal for t in result.trades if "锁利" in t.signal]
+    assert signals, f"没有触发锁利: {[t.signal for t in result.trades]}"
+
+
+def test_stop_loss_kicks_in(monkeypatch):
+    """每日 -2%，stop_loss=0.05 → 应立即触发止损。"""
+    monkeypatch.setattr("atrade.signals.SignalEngine.scan", _always_buy_signal())
+    df = _trending_df(60, [-0.02] * 60, base_price=100.0)
+    sim = _make_sim_with_df(df, stop_loss_pct=0.05)
+    result = sim.run("000001", cost_price=100.0, quantity=100,
+                     start_date="2026-01-01", end_date="2026-04-15",
+                     force_eod_close=False)
+    stop_signals = [t for t in result.trades if t.signal == "强制止损"]
+    assert stop_signals, f"未触发止损: {[t.signal for t in result.trades]}"
+
+
+# test_default_behavior_unchanged 已删除（既有 11 项测试覆盖默认行为）
+
+

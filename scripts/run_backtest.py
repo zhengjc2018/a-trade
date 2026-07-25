@@ -34,7 +34,22 @@ def run_one(symbol: str, cost: float, qty: int, args) -> T0BacktestResult:
     )
     return sim.run(symbol, cost, qty,
                    start_date=args.start.replace("-", ""),
-                   end_date=args.end.replace("-", ""))
+                   end_date=args.end.replace("-", ""),
+                   take_profit_pct=args.take_profit if hasattr(args, "take_profit") else None,
+                   stop_loss_pct=args.stop_loss if hasattr(args, "stop_loss") else None)
+
+
+def run_sweep_one(symbol: str, cost: float, qty: int, args):
+    """跑 sweep 模式，返回 SweepEntry 列表。"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from atrade.backtest.sweep import SweepGrid, run_sweep, to_markdown
+    grid = SweepGrid()
+    entries = run_sweep(
+        symbol, cost, qty, grid,
+        start_date=args.start, end_date=args.end, scale=args.scale,
+    )
+    return entries, to_markdown(symbol, entries, cost, qty)
 
 
 def print_console(results):
@@ -85,7 +100,12 @@ def main():
     parser.add_argument("--fee-commission", type=float, default=0.00025)
     parser.add_argument("--fee-stamp-duty-sell", type=float, default=0.001)
     parser.add_argument("--slippage", type=float, default=0.0005)
-    parser.add_argument("--push", action="store_true", help="推送到 QQ 群")
+    parser.add_argument("--take-profit", type=float, default=None,
+                        help="单股锁利比例（如 0.03 = +3%%）；None 走兜底逻辑")
+    parser.add_argument("--stop-loss", type=float, default=None,
+                        help="单股止损比例（如 0.02 = -2%%）；None 走兜底逻辑")
+    parser.add_argument("--push", action="store_true", help="推送到钉钉")
+    parser.add_argument("--sweep", action="store_true", help="跑锁利/止损参数扫描")
 
     args = parser.parse_args()
 
@@ -105,19 +125,36 @@ def main():
         parser.print_help()
         return
 
-    results = [run_one(s, c, q, args) for s, c, q in targets]
-    print_console(results)
-    paths = save_report(results)
-    for p in paths:
-        print(f"📄 报告: {p}")
+    if args.sweep:
+        sweep_results = {}
+        sweep_paths = {}
+        for s, c, q in targets:
+            entries, md = run_sweep_one(s, c, q, args)
+            sweep_results[s] = (entries, md)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            spath = REPORTS_DIR / f"sweep_{s}_{stamp}.md"
+            spath.write_text(md, encoding="utf-8")
+            sweep_paths[s] = spath
+            print(f"🧪 {s} 扫描 {len(entries)} 个组合，最佳建议见报告")
+    else:
+        results = [run_one(s, c, q, args) for s, c, q in targets]
+        print_console(results)
+        paths = save_report(results)
+        for p in paths:
+            print(f"📄 报告: {p}")
 
     if args.push:
         try:
             from atrade.notify import load_notifier, split_markdown_by_bytes
-            notifier = load_notifier(preferred="openclaw")
-            for r in results:
-                for chunk in split_markdown_by_bytes(r.summary(), max_bytes=3500):
-                    notifier.send_markdown(chunk)
+            notifier = load_notifier(preferred="dingtalk")
+            if args.sweep:
+                for s, (_entries, md) in sweep_results.items():
+                    for chunk in split_markdown_by_bytes(md, max_bytes=3500):
+                        notifier.send_markdown(chunk)
+            else:
+                for r in results:
+                    for chunk in split_markdown_by_bytes(r.summary(), max_bytes=3500):
+                        notifier.send_markdown(chunk)
         except Exception as e:
             print(f"⚠️ 推送失败: {e}", file=sys.stderr)
 
