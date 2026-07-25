@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atrade.market.index_filter import (
     MarketRegimeFilter,
