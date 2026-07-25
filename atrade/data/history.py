@@ -81,7 +81,10 @@ class HistoryProvider:
 
     @staticmethod
     def _to_sina_symbol(symbol: str) -> str:
-        symbol = str(symbol).strip().zfill(6)
+        symbol = str(symbol).strip().lower()
+        if re.fullmatch(r"(?:sh|sz)\d{6}", symbol):
+            return symbol
+        symbol = symbol.zfill(6)
         prefix = "sh" if symbol.startswith("6") else "sz"
         return f"{prefix}{symbol}"
 

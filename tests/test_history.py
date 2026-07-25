@@ -25,6 +25,11 @@ FAKE_DF = pd.DataFrame([
 ])
 
 
+def test_to_sina_symbol_preserves_prefixed_index():
+    assert HistoryProvider._to_sina_symbol("sh000300") == "sh000300"
+    assert HistoryProvider._to_sina_symbol("sz399001") == "sz399001"
+
+
 @pytest.fixture
 def hp(tmp_path):
     return HistoryProvider(cache_path=str(tmp_path / "test.db"))
