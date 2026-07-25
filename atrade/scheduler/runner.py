@@ -77,7 +77,20 @@ class DailyScheduler:
         self.monitor_config = load_monitor_config_from_module()
         self.calendar = TradingCalendar()
         self.screen_runner = ScreenMonitorRunner(self.monitor_config.get("screen"))
-        self.t_runner = TMonitorRunner(self.monitor_config.get("t_monitor"))
+        tmon_cfg = dict(self.monitor_config.get("t_monitor") or {})
+        # 若 monitor.t_monitor.symbols 留空，从 holdings 派生（web UI 改 holdings 即同步）
+        if not tmon_cfg.get("symbols") and self.holdings:
+            tmon_cfg["symbols"] = [
+                {
+                    "symbol": h["symbol"],
+                    "name": h.get("name", ""),
+                    "cost_price": h.get("cost_price", 0.0),
+                    "quantity": h.get("quantity", 0),
+                    "note": h.get("note", ""),
+                }
+                for h in self.holdings
+            ]
+        self.t_runner = TMonitorRunner(tmon_cfg)
 
         self.report_gen = ReportGenerator(
             holdings=self.holdings,
@@ -390,7 +403,22 @@ class DailyScheduler:
 
         disabled = set(holdings_meta.get("disabled_symbols") or [])
         t_symbols_raw = (monitor.get("t_monitor") or {}).get("symbols") or []
-        t_symbols_filtered = [s for s in t_symbols_raw if s.get("symbol") not in disabled]
+        if t_symbols_raw:
+            # monitor.local.json 显式配置 → 用配置的（向后兼容）
+            t_symbols_filtered = [s for s in t_symbols_raw if s.get("symbol") not in disabled]
+        else:
+            # 否则从 holdings 派生（默认行为：web UI 改 holdings 即同步）
+            t_symbols_filtered = [
+                {
+                    "symbol": h["symbol"],
+                    "name": h.get("name", ""),
+                    "cost_price": h.get("cost_price", 0.0),
+                    "quantity": h.get("quantity", 0),
+                    "note": h.get("note", ""),
+                }
+                for h in self.holdings
+                if h.get("symbol") not in disabled
+            ]
         self.t_runner.config.symbols = [
             TMonitorItem(
                 symbol=str(s["symbol"]).zfill(6),
