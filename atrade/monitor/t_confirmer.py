@@ -36,6 +36,7 @@ class Candidate:
     trigger_price: float
     name: str = ""
     note: str = ""
+    factor_hits: list[str] = field(default_factory=list)
     first_seen: datetime = field(default_factory=datetime.now)
     first_trigger_price: float | None = None
     hits: int = 1  # 连续命中次数
@@ -56,6 +57,7 @@ class Candidate:
         self.trigger_price = other.trigger_price or self.trigger_price
         self.name = other.name or self.name
         self.note = other.note or self.note
+        self.factor_hits = other.factor_hits or self.factor_hits
 
     def to_alert_dict(self, signal_key: str) -> dict:
         return {
@@ -70,6 +72,7 @@ class Candidate:
             "time": self.last_seen.strftime("%Y-%m-%d %H:%M"),
             "note": self.note,
             "hits": self.hits,
+            "factor_hits": self.factor_hits,
         }
 
 
@@ -162,6 +165,7 @@ class TwoStageConfirmer:
                 first_trigger_price=trigger_price,
                 name=str(cand_dict.get("name", "")),
                 note=str(cand_dict.get("note", "")),
+                factor_hits=[str(item) for item in cand_dict.get("factor_hits", [])],
             )
 
             # bypass 类型（默认 STOP_LOSS）→ 立即放行
@@ -228,6 +232,7 @@ class TwoStageConfirmer:
                 first_trigger_price=trigger_price,
                 name=str(cand_dict.get("name", "")),
                 note=str(cand_dict.get("note", "")),
+                factor_hits=[str(item) for item in cand_dict.get("factor_hits", [])],
             )
             cand.hits = self.confirm_bars
             sig_key = f"{symbol}:{sig_type}:{cand.last_seen.strftime('%Y%m%d%H%M')}:{cand.trigger_price:.2f}"

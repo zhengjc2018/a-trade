@@ -1,8 +1,8 @@
 # 2026-07-25 T 胜率优化与每日复盘 STATUS
 
 - **总体状态：** 进行中
-- **当前阶段：** Task 5-6 监控与自动执行集成
-- **当前步骤：** holdings 唯一来源、趋势过滤、风险告警优先和状态提交
+- **当前阶段：** Task 7 当日 Round-trip 复盘统计
+- **当前步骤：** BUY→SELL FIFO 配对、部分成交和胜率/盈亏比聚合
 - **已完成：**
   - 审计现有 5 分钟信号、双阶段确认、自动执行和调度流程
   - 确认按股可配置锁利/止损，默认 +3% / -2%
@@ -26,7 +26,13 @@
   - API 仅允许修改真实 holdings，并在写入时清理 stale 股票覆盖
   - 补齐 FastAPI/Uvicorn/httpx 依赖清单
   - 验证：配置与 Web `49 passed`，`ruff check` 全部通过
-- **下一步：** 让 scheduler 始终从 holdings 派生股票，并集成趋势/风险状态
+  - scheduler 始终从 holdings 派生做 T 股票，monitor symbols 只叠加阈值
+  - 个股日线/大盘双闸门接入普通信号，风险退出始终放行
+  - 锁利/止损信号首轮直出并优先于引擎普通信号
+  - BUY 成功后写 holding，锁利后 locked，其他卖出后 empty
+  - 成交记录保留 factor_hits/risk_action，成功 BUY 不再误标 skipped
+  - 验证：监控/执行/调度 `48 passed`，`ruff check` 全部通过
+- **下一步：** 实现当天有效成交配对和复盘统计
 - **阻塞项：** GitHub HTTPS 瞬时不可用（已尝试 HTTP/2、HTTP/1.1；VPS 同步正常，最终阶段继续重试）
 - **阻塞项：** 无
 - **最后更新时间：** 2026-07-25

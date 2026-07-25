@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from atrade.config import (
-    load_holdings as load_holdings_config,
+    load_holdings_with_meta as load_holdings_with_meta_config,
 )
 from atrade.config import (
     load_monitor_config as load_monitor_config_from_module,
@@ -40,6 +40,35 @@ _RELOAD_SOCK_PATH = os.getenv(
 )
 
 # 配置文件统一由 atrade.config 加载；本模块不再直接读 JSON。
+
+
+def _derive_t_symbols(
+    holdings: list[dict],
+    disabled: set[str],
+    symbol_overrides: list[dict],
+) -> list[dict]:
+    """以 holdings 为唯一股票源，仅叠加 monitor 中的 trailing 覆盖。"""
+    overrides = {
+        str(item.get("symbol", "")).zfill(6): dict(item.get("trailing") or {})
+        for item in symbol_overrides
+        if isinstance(item, dict) and item.get("symbol") and item.get("trailing")
+    }
+    result = []
+    for holding in holdings:
+        symbol = str(holding.get("symbol", "")).zfill(6)
+        if symbol in disabled:
+            continue
+        item = {
+            "symbol": symbol,
+            "name": holding.get("name", ""),
+            "cost_price": holding.get("cost_price", 0.0),
+            "quantity": holding.get("quantity", 0),
+            "note": holding.get("note", ""),
+        }
+        if symbol in overrides:
+            item["trailing"] = overrides[symbol]
+        result.append(item)
+    return result
 
 
 class ATradeClient(botpy.Client):
@@ -71,25 +100,19 @@ class DailyScheduler:
     """每日定时任务调度器。"""
 
     def __init__(self):
-        self.holdings = load_holdings_config()
+        holdings_meta = load_holdings_with_meta_config()
+        self.holdings = holdings_meta["holdings"]
         self.watch_symbols = [h.get("symbol") for h in self.holdings if h.get("symbol")]
         self.watch_keywords = load_watch_keywords() or self._load_keywords()
         self.monitor_config = load_monitor_config_from_module()
         self.calendar = TradingCalendar()
         self.screen_runner = ScreenMonitorRunner(self.monitor_config.get("screen"))
         tmon_cfg = dict(self.monitor_config.get("t_monitor") or {})
-        # 若 monitor.t_monitor.symbols 留空，从 holdings 派生（web UI 改 holdings 即同步）
-        if not tmon_cfg.get("symbols") and self.holdings:
-            tmon_cfg["symbols"] = [
-                {
-                    "symbol": h["symbol"],
-                    "name": h.get("name", ""),
-                    "cost_price": h.get("cost_price", 0.0),
-                    "quantity": h.get("quantity", 0),
-                    "note": h.get("note", ""),
-                }
-                for h in self.holdings
-            ]
+        tmon_cfg["symbols"] = _derive_t_symbols(
+            self.holdings,
+            set(holdings_meta.get("disabled_symbols") or []),
+            tmon_cfg.get("symbols") or [],
+        )
         self.t_runner = TMonitorRunner(tmon_cfg)
 
         self.report_gen = ReportGenerator(
@@ -331,7 +354,10 @@ class DailyScheduler:
             executor = getattr(self, "t_executor", None)
             if executor is None:
                 tmon_cfg = self.monitor_config.get("t_monitor", {})
-                executor = TTradeExecutor(tmon_cfg)
+                executor = TTradeExecutor(
+                    tmon_cfg,
+                    state_store=self.t_runner.t_state_store,
+                )
                 self.t_executor = executor
             for alert in alerts:
                 trade = executor.execute(alert)
@@ -393,6 +419,7 @@ class DailyScheduler:
         """
         from atrade.config import load_holdings_with_meta, load_monitor_config
         from atrade.monitor.t_monitor import TMonitorItem
+        from atrade.monitor.t_trailing import TrailingConfig
 
         holdings_meta = load_holdings_with_meta()
         monitor = load_monitor_config()
@@ -402,23 +429,14 @@ class DailyScheduler:
         self.watch_keywords = holdings_meta.get("watch_keywords") or []
 
         disabled = set(holdings_meta.get("disabled_symbols") or [])
-        t_symbols_raw = (monitor.get("t_monitor") or {}).get("symbols") or []
-        if t_symbols_raw:
-            # monitor.local.json 显式配置 → 用配置的（向后兼容）
-            t_symbols_filtered = [s for s in t_symbols_raw if s.get("symbol") not in disabled]
-        else:
-            # 否则从 holdings 派生（默认行为：web UI 改 holdings 即同步）
-            t_symbols_filtered = [
-                {
-                    "symbol": h["symbol"],
-                    "name": h.get("name", ""),
-                    "cost_price": h.get("cost_price", 0.0),
-                    "quantity": h.get("quantity", 0),
-                    "note": h.get("note", ""),
-                }
-                for h in self.holdings
-                if h.get("symbol") not in disabled
-            ]
+        t_monitor_config = monitor.get("t_monitor") or {}
+        trailing_defaults = t_monitor_config.get("trailing_defaults") or {}
+        lots_per_trade = float(t_monitor_config.get("lots_per_trade", 1.0))
+        t_symbols_filtered = _derive_t_symbols(
+            self.holdings,
+            disabled,
+            t_monitor_config.get("symbols") or [],
+        )
         self.t_runner.config.symbols = [
             TMonitorItem(
                 symbol=str(s["symbol"]).zfill(6),
@@ -426,9 +444,19 @@ class DailyScheduler:
                 cost_price=float(s.get("cost_price", 0.0)),
                 quantity=int(s.get("quantity", 0)),
                 note=str(s.get("note", "")),
+                trailing=TrailingConfig.from_dict(
+                    trailing_defaults,
+                    s.get("trailing") or {},
+                    exit_lots=lots_per_trade,
+                ),
             )
             for s in t_symbols_filtered
         ]
+        self.t_runner.config.trailing_defaults = trailing_defaults
+        self.t_runner.config.lots_per_trade = lots_per_trade
+        self.monitor_config = monitor
+        if hasattr(self, "t_executor"):
+            del self.t_executor
 
         if hasattr(self, "report_gen") and self.report_gen is not None:
             self.report_gen.holdings = self.holdings

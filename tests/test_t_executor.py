@@ -122,7 +122,8 @@ def test_buy_records_only_no_quantity_change(tmp_path, monkeypatch):
     trade = ex.execute(_alert(sig="BUY"))
 
     assert trade["direction"] == "BUY"
-    assert "BUY 仅记账" in trade["skipped_reason"]
+    assert trade["skipped_reason"] == ""
+    assert "BUY 仅记账" in trade["execution_note"]
     assert trade["shares"] == 100  # 记账了 100 股
 
     # 持仓没变
@@ -162,3 +163,84 @@ def test_lots_per_trade_configurable(tmp_path, monkeypatch):
     trade = ex.execute(_alert(sig="SELL"))
     assert trade["shares"] == 200
     assert trade["holding_qty_after"] == 300
+
+
+def test_buy_marks_t_state_holding_and_keeps_factor_hits(tmp_path, monkeypatch):
+    from atrade.monitor import t_executor
+    from atrade.monitor.t_state import TStateStore
+
+    monkeypatch.setattr(t_executor, "_TRADES_FILE", tmp_path / "t_trades.json")
+    holdings_path = tmp_path / "h.json"
+    holdings_path.write_text(json.dumps({
+        "holdings": [{"symbol": "002436", "name": "兴森科技", "cost_price": 10,
+                      "quantity": 300, "buy_date": "", "note": ""}],
+        "disabled_symbols": [], "watch_keywords": [],
+    }))
+    monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", holdings_path)
+    monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", tmp_path / "missing.json")
+    state_store = TStateStore(tmp_path / "t_state.json")
+    executor = t_executor.TTradeExecutor({"auto_execute": True}, state_store=state_store)
+    alert = _alert(sig="BUY", price=10.0)
+    alert["factor_hits"] = ["趋势确认"]
+
+    trade = executor.execute(alert)
+
+    state = state_store.get("002436")
+    assert state.status == "holding"
+    assert state.entry_price == 10.0
+    assert trade["factor_hits"] == ["趋势确认"]
+
+
+def test_take_profit_uses_alert_lots_and_locks_state(tmp_path, monkeypatch):
+    from atrade.monitor import t_executor
+    from atrade.monitor.t_state import TStateStore
+
+    monkeypatch.setattr(t_executor, "_TRADES_FILE", tmp_path / "t_trades.json")
+    holdings_path = tmp_path / "h.json"
+    holdings_path.write_text(json.dumps({
+        "holdings": [{"symbol": "002436", "name": "兴森科技", "cost_price": 10,
+                      "quantity": 300, "buy_date": "", "note": ""}],
+        "disabled_symbols": [], "watch_keywords": [],
+    }))
+    monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", holdings_path)
+    monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", tmp_path / "missing.json")
+    state_store = TStateStore(tmp_path / "t_state.json")
+    state_store.mark_buy("002436", 10.0, 0.5, "趋势确认")
+    executor = t_executor.TTradeExecutor({"auto_execute": True}, state_store=state_store)
+    alert = _alert(sig="SELL", price=10.3)
+    alert.update({"__execution_lots__": 0.5, "__risk_action__": "take_profit"})
+
+    trade = executor.execute(alert)
+
+    assert trade["shares"] == 50
+    assert trade["risk_action"] == "take_profit"
+    assert state_store.get("002436").status == "locked"
+
+
+def test_failed_holding_update_does_not_advance_state(tmp_path, monkeypatch):
+    from atrade.monitor import t_executor
+    from atrade.monitor.t_state import TStateStore
+
+    monkeypatch.setattr(t_executor, "_TRADES_FILE", tmp_path / "t_trades.json")
+    holdings_path = tmp_path / "h.json"
+    holdings_path.write_text(json.dumps({
+        "holdings": [{"symbol": "002436", "name": "兴森科技", "cost_price": 10,
+                      "quantity": 300, "buy_date": "", "note": ""}],
+        "disabled_symbols": [], "watch_keywords": [],
+    }))
+    monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", holdings_path)
+    monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", tmp_path / "missing.json")
+    state_store = TStateStore(tmp_path / "t_state.json")
+    state_store.mark_buy("002436", 10.0, 1.0, "趋势确认")
+    executor = t_executor.TTradeExecutor({"auto_execute": True}, state_store=state_store)
+    monkeypatch.setattr(
+        t_executor,
+        "_update_holding_quantity",
+        lambda *args: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    import pytest
+
+    with pytest.raises(OSError, match="disk full"):
+        executor.execute(_alert(sig="SELL", price=10.3))
+    assert state_store.get("002436").status == "holding"

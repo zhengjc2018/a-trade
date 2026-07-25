@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
+
+from .t_state import TStateStore
 
 _TRADES_FILE = Path(__file__).resolve().parents[2] / "data" / "cache" / "t_trades.json"
 _lock = threading.Lock()
@@ -38,6 +40,9 @@ class TTrade:
     reason: str
     holding_qty_after: int
     skipped_reason: str = ""  # 若非空说明跳过原因
+    execution_note: str = ""
+    risk_action: str = ""
+    factor_hits: list[str] = field(default_factory=list)
 
 
 def load_trades() -> list[dict]:
@@ -126,12 +131,17 @@ class ExecutorConfig:
 class TTradeExecutor:
     """T 信号执行器（线程安全）。"""
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(
+        self,
+        config: Optional[dict] = None,
+        state_store: Optional[TStateStore] = None,
+    ):
         cfg = config or {}
         self.config = ExecutorConfig(
             auto_execute=bool(cfg.get("auto_execute", True)),
             lots_per_trade=float(cfg.get("lots_per_trade", 1.0)),
         )
+        self.state_store = state_store or TStateStore()
 
     def execute(self, alert: dict) -> Optional[dict]:
         """执行或跳过，返回 trade dict 或 None。
@@ -142,13 +152,18 @@ class TTradeExecutor:
             return None
 
         symbol = str(alert.get("symbol", "")).zfill(6)
-        if not symbol:
+        if not symbol.isdigit() or symbol == "000000":
             return None
         sig = str(alert.get("signal_type", "watch")).lower()
-        lots = max(0.01, float(self.config.lots_per_trade))
+        if sig not in {"buy", "sell", "stop_loss"}:
+            return None
+        execution_lots = alert.get("__execution_lots__", self.config.lots_per_trade)
+        lots = max(0.01, float(execution_lots))
         shares = int(round(lots * 100))
         price = float(alert.get("trigger_price") or 0)
         now = datetime.now().isoformat(timespec="seconds")
+        risk_action = str(alert.get("__risk_action__", ""))
+        factor_hits = [str(item) for item in alert.get("factor_hits", [])]
 
         # 反重复：今天已执行过同方向 → 跳过
         if _already_traded_today(symbol, sig):
@@ -160,6 +175,8 @@ class TTradeExecutor:
                 reason=alert.get("reason", ""),
                 holding_qty_after=_current_qty(symbol),
                 skipped_reason=f"今日已执行过 {sig.upper()}",
+                risk_action=risk_action,
+                factor_hits=factor_hits,
             )
             save_trade(asdict(trade))
             return asdict(trade)
@@ -179,6 +196,8 @@ class TTradeExecutor:
                     reason=alert.get("reason", ""),
                     holding_qty_after=current_qty,
                     skipped_reason=f"持仓不足（{current_qty} 股 < {shares} 股）",
+                    risk_action=risk_action,
+                    factor_hits=factor_hits,
                 )
                 save_trade(asdict(trade))
                 return asdict(trade)
@@ -193,8 +212,12 @@ class TTradeExecutor:
                 signal_name=alert.get("signal_name", ""),
                 reason=alert.get("reason", ""),
                 holding_qty_after=new_qty,
+                risk_action=risk_action,
+                factor_hits=factor_hits,
             )
             save_trade(asdict(trade))
+            exit_status = "locked" if risk_action == "take_profit" else "empty"
+            self.state_store.mark_exit(symbol, status=exit_status)
             logger.success(f"✅ T-trade 执行: {sig.upper()} {symbol} {shares}股 @ {price} (剩余 {new_qty} 股)")
             return asdict(trade)
 
@@ -207,9 +230,18 @@ class TTradeExecutor:
             price=price, signal_name=alert.get("signal_name", ""),
             reason=alert.get("reason", ""),
             holding_qty_after=(holding or {}).get("quantity", 0),
-            skipped_reason="BUY 仅记账，不模拟加仓",
+            execution_note="BUY 仅记账，不模拟加仓",
+            risk_action=risk_action,
+            factor_hits=factor_hits,
         )
         save_trade(asdict(trade))
+        self.state_store.mark_buy(
+            symbol,
+            entry_price=price,
+            lots=lots,
+            entry_signal=alert.get("signal_name", ""),
+            timestamp=now,
+        )
         logger.info(f"📝 T-trade 记账: BUY {symbol} {shares}股 @ {price}")
         return asdict(trade)
 

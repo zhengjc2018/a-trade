@@ -31,12 +31,15 @@ from loguru import logger
 from atrade.backtest.t0_simulator import T0Simulator
 from atrade.data import HistoryProvider
 from atrade.indicators import add_all_indicators
+from atrade.market import MarketRegimeFilter, allows_signal
 from atrade.notify import (
     infer_conclusion,
     prepend_headline,
 )
 
 from .t_confirmer import TwoStageConfirmer
+from .t_state import TStateStore
+from .t_trailing import TrailingConfig, check_trailing
 
 _STATE_FILE = Path(__file__).resolve().parents[2] / "data" / "cache" / "t_monitor_state.json"
 
@@ -51,6 +54,7 @@ class TMonitorItem:
     cost_price: float = 0.0
     quantity: int = 0
     note: str = ""
+    trailing: TrailingConfig = field(default_factory=TrailingConfig)
 
 
 @dataclass
@@ -62,6 +66,8 @@ class TMonitorConfig:
     confirm_bars: int = 2
     candidate_ttl_minutes: int = 30
     allow_non_main_board: bool = False  # 默认排除 ST/创业板/科创板/京板
+    lots_per_trade: float = 1.0
+    trailing_defaults: dict = field(default_factory=dict)
     symbols: list[TMonitorItem] = field(default_factory=list)
 
 
@@ -73,8 +79,14 @@ class TMonitorRunner:
         config: Optional[dict] = None,
         ttl_hours: int = DEFAULT_TTL_HOURS,
         confirmer: Optional[TwoStageConfirmer] = None,
+        history=None,
+        engine=None,
+        regime_filter=None,
+        t_state_store: Optional[TStateStore] = None,
     ):
         cfg = config or {}
+        trailing_defaults = dict(cfg.get("trailing_defaults") or {})
+        lots_per_trade = float(cfg.get("lots_per_trade", 1.0))
         self.config = TMonitorConfig(
             enabled=bool(cfg.get("enabled", True)),
             scan_interval_minutes=int(cfg.get("scan_interval_minutes", 2)),
@@ -83,6 +95,8 @@ class TMonitorRunner:
             confirm_bars=int(cfg.get("confirm_bars", 2)),
             candidate_ttl_minutes=int(cfg.get("candidate_ttl_minutes", 30)),
             allow_non_main_board=bool(cfg.get("allow_non_main_board", False)),
+            lots_per_trade=lots_per_trade,
+            trailing_defaults=trailing_defaults,
             symbols=[
                 TMonitorItem(
                     symbol=str(item.get("symbol", "")).zfill(6),
@@ -90,14 +104,24 @@ class TMonitorRunner:
                     cost_price=float(item.get("cost_price", 0.0)),
                     quantity=int(item.get("quantity", 0)),
                     note=str(item.get("note", "")),
+                    trailing=TrailingConfig.from_dict(
+                        trailing_defaults,
+                        item.get("trailing") or {},
+                        exit_lots=lots_per_trade,
+                    ),
                 )
                 for item in (cfg.get("symbols") or [])
                 if item.get("symbol")
             ],
         )
         self.ttl_hours = ttl_hours
-        self.history = HistoryProvider()
-        self.engine = T0Simulator(scale=self.config.scale, datalen=self.config.datalen).engine
+        self.history = history or HistoryProvider()
+        self.engine = engine or T0Simulator(
+            scale=self.config.scale,
+            datalen=self.config.datalen,
+        ).engine
+        self.regime_filter = regime_filter or MarketRegimeFilter()
+        self.t_state_store = t_state_store or TStateStore()
         self._state = self._load_state()
         self.confirmer = confirmer or TwoStageConfirmer(
             confirm_bars=self.config.confirm_bars,
@@ -108,6 +132,7 @@ class TMonitorRunner:
         self.candidate_count = 0  # 引擎产出候选数
         self.skipped_count = 0  # TTL 命中跳过
         self.error_count = 0
+        self.filtered_count = 0
 
     def _load_state(self) -> dict:
         if not _STATE_FILE.exists():
@@ -166,8 +191,9 @@ class TMonitorRunner:
         self._save_state()
 
     def _scan_candidates(self) -> list[dict]:
-        """执行一次扫描，返回未经过滤的候选告警。"""
+        """扫描并应用个股日线、大盘双闸门和 T 仓风险退出。"""
         candidates: list[dict] = []
+        market_gate = self.regime_filter.get_market_gate()
         for item in self.config.symbols:
             try:
                 df = self.history.fetch_with_cache(
@@ -179,13 +205,35 @@ class TMonitorRunner:
                 if df.empty or len(df) < 30:
                     continue
                 df_ind = add_all_indicators(df).reset_index(drop=True)
+                latest = df_ind.iloc[-1]
+                current_price = float(latest.get("close") or 0.0)
+                trade_day = str(latest.get("date", ""))[:10]
+
+                state = self.t_state_store.update_peak(item.symbol, current_price)
+                risk_action = check_trailing(state, current_price, item.trailing)
+                if risk_action is not None:
+                    candidates.append(self._build_risk_candidate(item, risk_action, trade_day))
+                    continue
+
                 signals = self.engine.scan(item.symbol, df_ind)
                 if not signals:
                     continue
 
-                latest = df_ind.iloc[-1]
-                trade_day = str(latest.get("date", ""))[:10]
+                symbol_trend = None
                 for sig in signals:
+                    if sig.signal_type.value == "buy" and symbol_trend is None:
+                        symbol_trend = self.regime_filter.get_symbol_trend(item.symbol)
+                    allowed, filter_reason = allows_signal(
+                        sig.signal_type.value,
+                        symbol_trend or market_gate,
+                        market_gate,
+                    )
+                    if not allowed:
+                        self.filtered_count += 1
+                        logger.info(
+                            f"做T信号过滤 {item.symbol} {sig.signal_type.value}: {filter_reason}"
+                        )
+                        continue
                     candidates.append({
                         "symbol": item.symbol,
                         "name": item.name or item.symbol,
@@ -196,11 +244,37 @@ class TMonitorRunner:
                         "strength": sig.strength.value,
                         "time": trade_day,
                         "note": item.note,
+                        "factor_hits": list(sig.factor_hits),
                     })
             except Exception as e:
                 self.error_count += 1
                 logger.warning(f"做T监控 {item.symbol} 失败: {e}")
         return candidates
+
+    @staticmethod
+    def _build_risk_candidate(item, action, trade_day: str) -> dict:
+        if action.action == "take_profit":
+            signal_name = "T仓锁利"
+        else:
+            signal_name = "T仓止损"
+        return {
+            "symbol": item.symbol,
+            "name": item.name or item.symbol,
+            "signal_type": action.signal_type,
+            "signal_name": signal_name,
+            "reason": action.reason,
+            "trigger_price": action.price,
+            "strength": "strong",
+            "time": trade_day,
+            "note": item.note,
+            "factor_hits": [action.action],
+            "__risk_action__": action.action,
+            "__execution_lots__": action.lots,
+            "__bypass_confirm__": True,
+        }
+
+    def reset_t_state_day(self, date: Optional[str] = None) -> None:
+        self.t_state_store.reset_day(date)
 
     def run_once(self) -> list[dict]:
         """扫描 → 双阶段确认 → TTL 去重，返回可推送的告警。
@@ -218,7 +292,16 @@ class TMonitorRunner:
         candidates = self._scan_candidates()
         self.candidate_count += len(candidates)
 
-        confirmed = self.confirmer.filter(candidates)
+        risk_candidates = [item for item in candidates if item.get("__bypass_confirm__")]
+        normal_candidates = [item for item in candidates if not item.get("__bypass_confirm__")]
+        confirmed = self.confirmer.filter(normal_candidates)
+        for item in risk_candidates:
+            risk_action = item.get("__risk_action__", "risk")
+            item["__signal_key__"] = (
+                f"{item.get('symbol', '')}:{risk_action}:{item.get('time', '')}"
+            )
+            item["hits"] = 1
+            confirmed.append(item)
 
         # TTL 命中再过滤一次（confirmer 不感知 TTL）
         alerts: list[dict] = []
@@ -257,6 +340,7 @@ class TMonitorRunner:
             f"- 引擎候选：{self.candidate_count}",
             f"- 已推送：{self.signal_count}",
             f"- TTL 跳过：{self.skipped_count}",
+            f"- 趋势过滤：{self.filtered_count}",
             f"- 待确认：{self.confirmer.pending_count}",
             f"- 确认门槛：{self.confirmer.confirm_bars} 根 + {self.confirmer.candidate_ttl_minutes} 分钟内",
             "- 说明：候选需连续命中才升级；STOP_LOSS 例外立即推送",
