@@ -21,6 +21,10 @@
     "candidate_ttl_minutes": 30,
     "auto_execute": true,
     "lots_per_trade": 1.0,
-    "allow_non_main_board": false
+    "allow_non_main_board": false,
+    "trailing_defaults": {
+      "take_profit_pct": 0.03,
+      "stop_loss_pct": 0.02
+    }
   }
 }

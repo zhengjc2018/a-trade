@@ -16,6 +16,10 @@
     "scan_interval_minutes": 2,
     "scale": "5m",
     "datalen": 120,
-    "symbols": []
+    "symbols": [],
+    "trailing_defaults": {
+      "take_profit_pct": 0.03,
+      "stop_loss_pct": 0.02
+    }
   }
 }

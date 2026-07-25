@@ -117,6 +117,50 @@ def test_load_monitor_returns_validated_config(isolated_config):
     assert cfg["t_monitor"]["scale"] == "5m"
 
 
+def test_load_monitor_adds_trailing_defaults(isolated_config):
+    (isolated_config / "monitor.json").write_text(json.dumps({
+        "t_monitor": {"symbols": []},
+    }))
+
+    cfg = load_monitor_config()["t_monitor"]
+
+    assert cfg["trailing_defaults"] == {
+        "take_profit_pct": 0.03,
+        "stop_loss_pct": 0.02,
+    }
+
+
+def test_load_monitor_accepts_minimal_symbol_trailing_override(isolated_config):
+    (isolated_config / "monitor.json").write_text(json.dumps({
+        "t_monitor": {
+            "trailing_defaults": {"take_profit_pct": 0.04},
+            "symbols": [
+                {"symbol": "600522", "trailing": {"stop_loss_pct": 0.015}},
+            ],
+        },
+    }))
+
+    cfg = load_monitor_config()["t_monitor"]
+
+    assert cfg["trailing_defaults"] == {
+        "take_profit_pct": 0.04,
+        "stop_loss_pct": 0.02,
+    }
+    assert cfg["symbols"] == [
+        {"symbol": "600522", "trailing": {"stop_loss_pct": 0.015}},
+    ]
+
+
+@pytest.mark.parametrize("value", [0, 1, -0.01, True, "bad"])
+def test_load_monitor_rejects_invalid_trailing_threshold(isolated_config, value):
+    (isolated_config / "monitor.json").write_text(json.dumps({
+        "t_monitor": {"trailing_defaults": {"take_profit_pct": value}},
+    }))
+
+    with pytest.raises(ConfigError, match="take_profit_pct"):
+        load_monitor_config()
+
+
 def test_load_monitor_rejects_invalid_scale(isolated_config):
     (isolated_config / "monitor.json").write_text(json.dumps({
         "t_monitor": {"scale": "99x", "scan_interval_minutes": 1, "datalen": 60, "symbols": []},

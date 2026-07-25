@@ -32,6 +32,7 @@ ENV_HOLDINGS = "A_TRADE_HOLDINGS_PATH"
 ENV_MONITOR = "A_TRADE_MONITOR_PATH"
 
 _CODE_RE = re.compile(r"^\d{6}$")
+_TRAILING_DEFAULTS = {"take_profit_pct": 0.03, "stop_loss_pct": 0.02}
 
 
 class ConfigError(ValueError):
@@ -77,6 +78,58 @@ def _validate_holding(item: Any, idx: int) -> dict:
         "buy_date": str(item.get("buy_date", "")),
         "note": str(item.get("note", "")),
     }
+
+
+def _validate_trailing_percentage(value: Any, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path} 必须为 0 和 1 之间的数字，实际: {value!r}")
+    normalized = float(value)
+    if not 0 < normalized < 1:
+        raise ConfigError(f"{path} 必须在 0 和 1 之间，实际: {value!r}")
+    return normalized
+
+
+def _validate_trailing(raw: Any, path: str, *, fill_defaults: bool) -> dict:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{path} 必须是对象")
+    unknown = set(raw) - set(_TRAILING_DEFAULTS)
+    if unknown:
+        raise ConfigError(f"{path} 包含未知字段: {sorted(unknown)}")
+    result = dict(_TRAILING_DEFAULTS) if fill_defaults else {}
+    for field in _TRAILING_DEFAULTS:
+        if field in raw and raw[field] not in (None, ""):
+            result[field] = _validate_trailing_percentage(raw[field], f"{path}.{field}")
+    return result
+
+
+def _validate_t_monitor_symbol(item: Any, idx: int) -> dict:
+    path = f"t_monitor.symbols[{idx}]"
+    if not isinstance(item, dict):
+        raise ConfigError(f"{path} 必须是对象")
+    code = str(item.get("symbol", "")).zfill(6)
+    if not _CODE_RE.match(code):
+        raise ConfigError(f"{path}.symbol 必须是 6 位数字，实际: {item.get('symbol')!r}")
+
+    result: dict[str, Any] = {"symbol": code}
+    for field in ("name", "note"):
+        if field in item:
+            result[field] = str(item.get(field, ""))
+    if "cost_price" in item:
+        cost_price = item["cost_price"]
+        if not isinstance(cost_price, (int, float)) or cost_price <= 0:
+            raise ConfigError(f"{path}.cost_price 必须 > 0，实际: {cost_price!r}")
+        result["cost_price"] = float(cost_price)
+    if "quantity" in item:
+        quantity = item["quantity"]
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+            raise ConfigError(f"{path}.quantity 必须为正整数，实际: {quantity!r}")
+        result["quantity"] = int(quantity)
+    trailing = _validate_trailing(item.get("trailing"), f"{path}.trailing", fill_defaults=False)
+    if trailing:
+        result["trailing"] = trailing
+    return result
 
 
 def _validate_monitor(cfg: dict) -> dict:
@@ -132,9 +185,15 @@ def _validate_monitor(cfg: dict) -> dict:
     if lots_per_trade > 100:
         raise ConfigError(f"t_monitor.lots_per_trade 不能 > 100，实际: {lots_per_trade}")
 
+    trailing_defaults = _validate_trailing(
+        tmon.get("trailing_defaults"),
+        "t_monitor.trailing_defaults",
+        fill_defaults=True,
+    )
+
     symbols = []
     for idx, item in enumerate(tmon.get("symbols") or []):
-        symbols.append(_validate_holding(item, idx))
+        symbols.append(_validate_t_monitor_symbol(item, idx))
 
     return {
         "news": {"enabled": bool(news.get("enabled", True))},
@@ -156,6 +215,7 @@ def _validate_monitor(cfg: dict) -> dict:
             "allow_non_main_board": bool(tmon.get("allow_non_main_board", False)),
             "auto_execute": bool(tmon.get("auto_execute", True)),
             "lots_per_trade": float(tmon.get("lots_per_trade", 1.0)),
+            "trailing_defaults": trailing_defaults,
             "symbols": symbols,
         },
     }
@@ -186,7 +246,15 @@ def load_monitor_config() -> dict:
             logger.info(f"加载监控配置: {path}")
             return validated
     logger.warning("未找到 monitor 配置文件，将返回空配置")
-    return {"news": {"enabled": False}, "screen": {"enabled": False}, "t_monitor": {"enabled": False, "symbols": []}}
+    return {
+        "news": {"enabled": False},
+        "screen": {"enabled": False},
+        "t_monitor": {
+            "enabled": False,
+            "trailing_defaults": dict(_TRAILING_DEFAULTS),
+            "symbols": [],
+        },
+    }
 
 
 def load_watch_keywords() -> list[str]:

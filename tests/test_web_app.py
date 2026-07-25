@@ -92,6 +92,8 @@ def test_root_serves_html():
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
     assert "<html" in resp.text.lower()
+    assert "锁利(%)" in resp.text
+    assert "止损(%)" in resp.text
 
 
 def test_static_assets_served():
@@ -135,3 +137,76 @@ def test_disable_via_enabled_flag(monkeypatch, tmp_path):
     resp = c.get("/api/holdings")
     target = next(h for h in resp.json() if h["symbol"] == "600522")
     assert target["enabled"] is False
+
+
+def test_holdings_include_effective_t_settings(monkeypatch, tmp_path):
+    holdings_path = tmp_path / "h.json"
+    holdings_path.write_text(
+        '{"holdings": [{"symbol": "600522", "name": "中天科技", '
+        '"cost_price": 62.0, "quantity": 200}], "disabled_symbols": []}'
+    )
+    monitor_path = tmp_path / "monitor.json"
+    monitor_path.write_text(
+        '{"t_monitor": {"trailing_defaults": {'
+        '"take_profit_pct": 0.03, "stop_loss_pct": 0.02}, '
+        '"symbols": [{"symbol": "600522", "trailing": {'
+        '"take_profit_pct": 0.04}}]}}'
+    )
+    monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", holdings_path)
+    monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", tmp_path / "h.local.json")
+    monkeypatch.setattr("atrade.config.DEFAULT_MONITOR", monitor_path)
+    monkeypatch.setattr("atrade.config.LOCAL_MONITOR", tmp_path / "m.local.json")
+
+    from fastapi.testclient import TestClient
+
+    from atrade.web.app import app
+
+    response = TestClient(app).get("/api/holdings")
+
+    assert response.status_code == 200
+    holding = response.json()[0]
+    assert holding["trailing"] == {"take_profit_pct": 0.04, "stop_loss_pct": 0.02}
+    assert holding["trailing_override"] == {"take_profit_pct": 0.04}
+
+
+def test_put_t_settings_updates_monitor_override(monkeypatch, tmp_path):
+    holdings_path = tmp_path / "h.json"
+    holdings_path.write_text(
+        '{"holdings": [{"symbol": "600522", "name": "中天科技", '
+        '"cost_price": 62.0, "quantity": 200}], "disabled_symbols": []}'
+    )
+    monitor_path = tmp_path / "monitor.local.json"
+    monitor_path.write_text('{"t_monitor": {"symbols": []}}')
+    monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", holdings_path)
+    monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", tmp_path / "h.local.json")
+    monkeypatch.setattr("atrade.web.storage._MONITOR_PATH", monitor_path)
+
+    from fastapi.testclient import TestClient
+
+    from atrade.web.app import app
+
+    response = TestClient(app).put(
+        "/api/t-settings/600522",
+        json={"take_profit_pct": 0.04, "stop_loss_pct": 0.015},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["effective"]["take_profit_pct"] == 0.04
+
+
+def test_put_t_settings_rejects_unknown_holding(monkeypatch):
+    monkeypatch.setattr(
+        "atrade.web.storage.read_holdings",
+        lambda: {"holdings": [], "disabled_symbols": []},
+    )
+
+    from fastapi.testclient import TestClient
+
+    from atrade.web.app import app
+
+    response = TestClient(app).put(
+        "/api/t-settings/600519",
+        json={"take_profit_pct": 0.04},
+    )
+
+    assert response.status_code == 404

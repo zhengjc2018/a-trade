@@ -4,6 +4,8 @@
 - GET /api/health
 - GET /api/holdings
 - PUT /api/holdings/{symbol}
+- GET /api/t-settings
+- PUT /api/t-settings/{symbol}
 - POST /api/reload
 - GET /            单页 HTML UI
 - GET /static/*    静态资源
@@ -58,11 +60,18 @@ def health() -> dict:
 @app.get("/api/holdings", dependencies=[Depends(require_bearer)])
 def get_holdings() -> list[dict]:
     meta = storage.read_holdings()
+    t_settings = storage.read_t_settings()
     disabled = set(meta.get("disabled_symbols") or [])
     out = []
     for h in meta.get("holdings", []):
         h2 = dict(h)
         h2["enabled"] = h2.get("symbol") not in disabled
+        override = dict(t_settings["symbols"].get(h2.get("symbol"), {}))
+        effective = dict(t_settings["defaults"])
+        effective.update(override)
+        h2["trailing"] = effective
+        h2["trailing_override"] = override
+        h2["trailing_defaults"] = t_settings["defaults"]
         out.append(h2)
     return out
 
@@ -73,15 +82,19 @@ def post_holding(holding: dict) -> dict:
 
     若 name 缺失或等于 symbol，自动从实时行情查名。
     """
-    sym = str(holding.get("symbol", "")).zfill(6)
-    provided_name = str(holding.get("name", "")).strip()
+    holding_payload = dict(holding)
+    trailing = holding_payload.pop("trailing", None)
+    sym = str(holding_payload.get("symbol", "")).zfill(6)
+    provided_name = str(holding_payload.get("name", "")).strip()
     if not provided_name or provided_name == sym:
         from .quote_lookup import lookup_quote
         q = lookup_quote(sym)
         if q and q.get("name"):
-            holding["name"] = q["name"]
+            holding_payload["name"] = q["name"]
     try:
-        validated = storage.create_holding(holding)
+        validated = storage.create_holding(holding_payload)
+        if trailing:
+            validated["t_settings"] = storage.update_t_settings(sym, trailing)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     return validated
@@ -92,11 +105,27 @@ def delete_holding(symbol: str) -> dict:
     """删除指定持仓。"""
     try:
         removed = storage.delete_holding(symbol)
+        storage.remove_t_settings(removed)
     except KeyError:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"symbol not found: {symbol}"
         ) from None
     return {"deleted": removed}
+
+
+@app.get("/api/t-settings", dependencies=[Depends(require_bearer)])
+def get_t_settings() -> dict:
+    return storage.read_t_settings()
+
+
+@app.put("/api/t-settings/{symbol}", dependencies=[Depends(require_bearer)])
+def put_t_settings(symbol: str, patch: dict) -> dict:
+    try:
+        return storage.update_t_settings(symbol, patch)
+    except KeyError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
 
 
 @app.put("/api/holdings/{symbol}", dependencies=[Depends(require_bearer)])

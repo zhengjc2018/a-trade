@@ -47,6 +47,8 @@
       '</div>' +
       '<div class="row"><label>成本价</label><input class="cost" type="number" step="0.01" value="' + (h.cost_price || 0) + '"></div>' +
       '<div class="row"><label>数量(手)</label><input class="qty" type="number" step="0.01" value="' + ((h.quantity || 0) / 100) + '"></div>' +
+      '<div class="row"><label>锁利(%)</label><input class="take-profit" type="number" step="0.1" placeholder="默认 ' + ((h.trailing_defaults.take_profit_pct || 0.03) * 100) + '" value="' + (h.trailing_override.take_profit_pct == null ? "" : h.trailing_override.take_profit_pct * 100) + '"></div>' +
+      '<div class="row"><label>止损(%)</label><input class="stop-loss" type="number" step="0.1" placeholder="默认 ' + ((h.trailing_defaults.stop_loss_pct || 0.02) * 100) + '" value="' + (h.trailing_override.stop_loss_pct == null ? "" : h.trailing_override.stop_loss_pct * 100) + '"></div>' +
       '<div class="row"><label>买入日</label><input class="date" type="text" placeholder="YYYY-MM-DD" value="' + (h.buy_date || "") + '"></div>' +
       '<div class="row"><label>备注</label><input class="note" type="text" maxlength="200" value="' + (h.note || "").replace(/"/g, "&quot;") + '"></div>' +
       '<div class="actions">' +
@@ -65,11 +67,20 @@
         note: card.querySelector(".note").value,
       };
       const r = await fetchJSON("/api/holdings/" + sym, { method: "PUT", body: patch });
-      if (r.ok) {
+      const takeProfitValue = card.querySelector(".take-profit").value.trim();
+      const stopLossValue = card.querySelector(".stop-loss").value.trim();
+      const riskResult = r.ok ? await fetchJSON("/api/t-settings/" + sym, {
+        method: "PUT",
+        body: {
+          take_profit_pct: takeProfitValue === "" ? null : parseFloat(takeProfitValue) / 100,
+          stop_loss_pct: stopLossValue === "" ? null : parseFloat(stopLossValue) / 100,
+        },
+      }) : { ok: false, status: r.status, data: r.data };
+      if (r.ok && riskResult.ok) {
         toast(sym + " 已保存", "ok");
         await refresh();
       } else {
-        toast("保存失败: " + r.status + " " + JSON.stringify(r.data), "err");
+        toast("保存失败: " + riskResult.status + " " + JSON.stringify(riskResult.data), "err");
       }
     };
 
@@ -132,6 +143,8 @@
     document.getElementById("add-name").value = "";
     document.getElementById("add-cost").value = "";
     document.getElementById("add-qty").value = "";
+    document.getElementById("add-take-profit").value = "";
+    document.getElementById("add-stop-loss").value = "";
     document.getElementById("add-date").value = "";
     document.getElementById("add-note").value = "";
     document.getElementById("add-dialog").style.display = "flex";
@@ -151,6 +164,13 @@
       buy_date: document.getElementById("add-date").value.trim(),
       note: document.getElementById("add-note").value.trim(),
     };
+    const takeProfitValue = document.getElementById("add-take-profit").value.trim();
+    const stopLossValue = document.getElementById("add-stop-loss").value.trim();
+    if (takeProfitValue !== "" || stopLossValue !== "") {
+      body.trailing = {};
+      if (takeProfitValue !== "") body.trailing.take_profit_pct = parseFloat(takeProfitValue) / 100;
+      if (stopLossValue !== "") body.trailing.stop_loss_pct = parseFloat(stopLossValue) / 100;
+    }
     const r = await fetchJSON("/api/holdings", { method: "POST", body: body });
     if (r.ok) {
       toast(body.symbol + " 已新增", "ok");

@@ -39,6 +39,9 @@ def fake_scheduler(monkeypatch, tmp_path):
     }))
     monkeypatch.setattr("atrade.config.DEFAULT_HOLDINGS", h_path)
     monkeypatch.setattr("atrade.config.LOCAL_HOLDINGS", tmp_path / "h.local.json")
+    monitor_path = tmp_path / "monitor.local.json"
+    monitor_path.write_text(json.dumps({"t_monitor": {"symbols": []}}))
+    monkeypatch.setattr("atrade.web.storage._MONITOR_PATH", monitor_path)
 
     yield sock_path
 
@@ -100,3 +103,17 @@ def test_full_flow_with_token(monkeypatch, fake_scheduler):
     r = c.post("/api/reload",
                headers={"Authorization": "Bearer test-token"})
     assert r.status_code == 200
+
+
+def test_put_t_settings_then_reload(fake_scheduler):
+    from atrade.web.app import app
+
+    client = TestClient(app)
+    response = client.put(
+        "/api/t-settings/600522",
+        json={"take_profit_pct": 0.04, "stop_loss_pct": 0.015},
+    )
+    assert response.status_code == 200
+
+    response = client.post("/api/reload")
+    assert response.status_code == 200

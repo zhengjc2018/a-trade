@@ -1,4 +1,4 @@
-"""holdings.local.json 读/写（原子操作 + 进程内锁）。"""
+"""holdings.local.json 与 monitor.local.json 原子读写。"""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from pathlib import Path
 from typing import Optional
 
 _HOLDINGS_PATH: Optional[Path] = None  # 由 init_app() 注入
-_lock = threading.Lock()
+_MONITOR_PATH: Optional[Path] = None
+_lock = threading.RLock()
 
 
-def init_app(path: Path) -> None:
+def init_app(path: Path, monitor_path: Optional[Path] = None) -> None:
     """在 FastAPI startup 时注入 holdings.local.json 路径。"""
-    global _HOLDINGS_PATH
+    global _HOLDINGS_PATH, _MONITOR_PATH
     _HOLDINGS_PATH = path
+    _MONITOR_PATH = monitor_path
 
 
 def _resolve_path() -> Path:
@@ -24,6 +26,26 @@ def _resolve_path() -> Path:
         from atrade.config import LOCAL_HOLDINGS
         return LOCAL_HOLDINGS
     return _HOLDINGS_PATH
+
+
+def _resolve_monitor_read_path() -> Path:
+    if _MONITOR_PATH is not None:
+        return _MONITOR_PATH
+    from atrade.config import DEFAULT_MONITOR, ENV_MONITOR, LOCAL_MONITOR
+
+    env_path = os.getenv(ENV_MONITOR)
+    if env_path:
+        return Path(env_path)
+    return LOCAL_MONITOR if LOCAL_MONITOR.exists() else DEFAULT_MONITOR
+
+
+def _resolve_monitor_write_path() -> Path:
+    if _MONITOR_PATH is not None:
+        return _MONITOR_PATH
+    from atrade.config import ENV_MONITOR, LOCAL_MONITOR
+
+    env_path = os.getenv(ENV_MONITOR)
+    return Path(env_path) if env_path else LOCAL_MONITOR
 
 
 def read_holdings() -> dict:
@@ -86,6 +108,114 @@ def delete_holding(symbol: str) -> str:
         meta["disabled_symbols"] = sorted(disabled)
         _write_unlocked(meta)
         return sym
+
+
+def read_t_settings() -> dict:
+    """返回全局默认值和当前 holdings 的按股覆盖。"""
+    from atrade.config import _validate_monitor
+
+    raw = _read_monitor_raw()
+    validated = _validate_monitor(raw).get("t_monitor", {})
+    holding_symbols = {
+        str(item.get("symbol", "")).zfill(6)
+        for item in read_holdings().get("holdings", [])
+    }
+    overrides = {
+        item["symbol"]: dict(item.get("trailing") or {})
+        for item in validated.get("symbols", [])
+        if item["symbol"] in holding_symbols and item.get("trailing")
+    }
+    return {
+        "defaults": dict(validated.get("trailing_defaults") or {}),
+        "symbols": overrides,
+    }
+
+
+def update_t_settings(symbol: str, patch: dict) -> dict:
+    """更新单股锁利/止损覆盖；None 表示回退全局默认。"""
+    normalized_symbol = str(symbol).zfill(6)
+    holding_symbols = {
+        str(item.get("symbol", "")).zfill(6)
+        for item in read_holdings().get("holdings", [])
+    }
+    if normalized_symbol not in holding_symbols:
+        raise KeyError(f"symbol not in holdings: {normalized_symbol}")
+    validated_patch = validate_t_settings_patch(patch)
+
+    with _lock:
+        raw = _read_monitor_raw()
+        t_monitor = raw.setdefault("t_monitor", {})
+        existing = {
+            str(item.get("symbol", "")).zfill(6): dict(item.get("trailing") or {})
+            for item in (t_monitor.get("symbols") or [])
+            if isinstance(item, dict)
+            and str(item.get("symbol", "")).zfill(6) in holding_symbols
+            and isinstance(item.get("trailing"), dict)
+        }
+        target = existing.get(normalized_symbol, {})
+        for field, value in validated_patch.items():
+            if value is None:
+                target.pop(field, None)
+            else:
+                target[field] = value
+        if target:
+            existing[normalized_symbol] = target
+        else:
+            existing.pop(normalized_symbol, None)
+        t_monitor["symbols"] = [
+            {"symbol": code, "trailing": existing[code]}
+            for code in sorted(existing)
+        ]
+        _write_monitor_raw(raw)
+
+    settings = read_t_settings()
+    override = settings["symbols"].get(normalized_symbol, {})
+    effective = dict(settings["defaults"])
+    effective.update(override)
+    return {
+        "symbol": normalized_symbol,
+        "override": override,
+        "effective": effective,
+        "defaults": settings["defaults"],
+    }
+
+
+def remove_t_settings(symbol: str) -> None:
+    """删除股票时同步清除其 T 阈值覆盖。"""
+    normalized_symbol = str(symbol).zfill(6)
+    with _lock:
+        raw = _read_monitor_raw()
+        t_monitor = raw.setdefault("t_monitor", {})
+        t_monitor["symbols"] = [
+            item
+            for item in (t_monitor.get("symbols") or [])
+            if str(item.get("symbol", "")).zfill(6) != normalized_symbol
+        ]
+        _write_monitor_raw(raw)
+
+
+def _read_monitor_raw() -> dict:
+    path = _resolve_monitor_read_path()
+    if not path.exists():
+        return {"t_monitor": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"monitor 配置 JSON 解析失败: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("monitor 配置必须是对象")
+    return payload
+
+
+def _write_monitor_raw(payload: dict) -> None:
+    path = _resolve_monitor_write_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, path)
 
 
 def update_holding(symbol: str, patch: dict) -> dict:
@@ -184,3 +314,24 @@ def validate_patch(patch: dict) -> dict:
     if not out:
         raise ValueError("patch 不能为空")
     return out
+
+
+def validate_t_settings_patch(patch: dict) -> dict:
+    if not isinstance(patch, dict) or not patch:
+        raise ValueError("T 阈值 patch 不能为空")
+    allowed_fields = {"take_profit_pct", "stop_loss_pct"}
+    unknown = set(patch) - allowed_fields
+    if unknown:
+        raise ValueError(f"T 阈值 patch 包含未知字段: {sorted(unknown)}")
+    result = {}
+    for field, value in patch.items():
+        if value in (None, ""):
+            result[field] = None
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field} 必须为 0 和 1 之间的数字或 null")
+        normalized = float(value)
+        if not 0 < normalized < 1:
+            raise ValueError(f"{field} 必须在 0 和 1 之间")
+        result[field] = normalized
+    return result
