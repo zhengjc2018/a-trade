@@ -1,5 +1,11 @@
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atrade.notify.delivery import DeliveryAttempt, DeliveryResult
 from atrade.scheduler.runner import DailyScheduler
@@ -87,3 +93,38 @@ def test_retry_job_calls_router_queue():
     scheduler.delivery_router.retry_failed.return_value = [SimpleNamespace(ok=True)]
     results = scheduler._job_retry_failed()
     assert len(results) == 1
+
+
+def test_t_state_reset_runs_at_trade_day():
+    scheduler = _scheduler_shell()
+
+    scheduler._job_t_state_reset()
+
+    scheduler.t_runner.reset_t_state_day.assert_called_once_with()
+
+
+def test_t_state_reset_skips_non_trade_day():
+    scheduler = _scheduler_shell()
+    scheduler.calendar.is_trade_day.return_value = False
+
+    scheduler._job_t_state_reset()
+
+    scheduler.t_runner.reset_t_state_day.assert_not_called()
+
+
+def test_scheduler_registers_reset_and_closing_at_1535():
+    scheduler = object.__new__(DailyScheduler)
+    scheduler.scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+    scheduler.monitor_config = {
+        "screen": {"interval_minutes": 30},
+        "t_monitor": {"scan_interval_minutes": 2},
+    }
+
+    scheduler._setup_jobs()
+
+    jobs = {job.id: job for job in scheduler.scheduler.get_jobs()}
+    assert "t_state_reset" in jobs
+    assert "t_replay" not in jobs
+    assert "hour='9', minute='30'" in str(jobs["t_state_reset"].trigger)
+    assert "hour='15', minute='35'" in str(jobs["closing_report"].trigger)
+    assert "hour='15', minute='40'" in str(jobs["closing_report_guard"].trigger)

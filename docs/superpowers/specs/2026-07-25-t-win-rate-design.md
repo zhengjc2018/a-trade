@@ -33,8 +33,8 @@ atrade/
 atrade/signals/engine.py    # 新增 _filter_market_trend + 大盘过滤
 atrade/monitor/t_monitor.py # 集成 filters + t_state + t_trailing
 atrade/monitor/t_executor.py # 追踪信号优先于原 SELL
-atrade/scheduler/runner.py  # 15:35 推送复盘
-atrade/report/generator.py  # generate_t_replay_report()
+atrade/scheduler/runner.py  # 09:30 日切；15:35 收盘日报合并复盘
+atrade/report/generator.py  # generate_t_replay_report() + closing report 合并
 atrade/config.py            # 校验新增字段
 config/monitor.json         # 新增字段默认
 ```
@@ -221,7 +221,7 @@ def compute_stats(trips: list[RoundTrip]) -> dict:
 
 ```python
 def generate_t_replay_report(date: str = None) -> str:
-    """15:35 复盘：T 交易胜率 + 按因子/股票统计。"""
+    """生成 T 交易胜率 + 按因子/股票统计，嵌入 15:35 收盘日报。"""
     from atrade.monitor.t_replay import compute_round_trips, compute_stats
     
     trades = load_trades()
@@ -266,7 +266,8 @@ def generate_t_replay_report(date: str = None) -> str:
 
 - **09:30**：`_job_t_state_reset()` 清空前日 t_state（确保新一天干净）
 - **盘中每 2 分钟**：T 扫描，原有逻辑（不重发）
-- **15:35 推送合并**：在原 15:35 closing_report guard 之前，加一个 `_job_t_replay()` 推送复盘
+- **15:35 推送合并**：收盘日报主任务改到 15:35，并在报告顶部嵌入复盘；不另发第二条消息
+- **15:40 漏发检查**：`closing_report_guard` 检查合并报告是否送达
 
 ## 错误处理
 

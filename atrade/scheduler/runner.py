@@ -189,10 +189,20 @@ class DailyScheduler:
             misfire_grace_time=5400,
         )
 
-        # 收盘日报：每个交易日 15:30
+        # 每个交易日 09:30 清空前一交易日的 T 仓状态
+        self.scheduler.add_job(
+            self._job_t_state_reset,
+            CronTrigger(hour=9, minute=30),
+            id="t_state_reset",
+            name="做T状态日切",
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+        # 收盘日报 + 做T复盘：每个交易日 15:35
         self.scheduler.add_job(
             self._job_closing_report,
-            CronTrigger(hour=15, minute=30),
+            CronTrigger(hour=15, minute=35),
             id="closing_report",
             name="收盘日报",
             coalesce=True,
@@ -229,7 +239,7 @@ class DailyScheduler:
             (8, 5, "morning_brief", self._job_morning_brief),
             (9, 30, "auction_analysis", self._job_auction_analysis),
             (12, 35, "noon_report", self._job_noon_report),
-            (15, 35, "closing_report", self._job_closing_report),
+            (15, 40, "closing_report", self._job_closing_report),
             (17, 5, "holdings_news", self._job_holdings_news),
         ]:
             self.scheduler.add_job(
@@ -511,13 +521,19 @@ class DailyScheduler:
             suffix,
         )
 
+    def _job_t_state_reset(self):
+        if not self.calendar.is_trade_day():
+            return
+        self.t_runner.reset_t_state_day()
+        logger.info("🔄 做T当日状态已重置")
+
     def _recover_missed_tasks(self):
         now = datetime.now()
         tasks = [
             RecoveryTask("morning_brief", time(8, 0), time(10, 0), self._job_morning_brief),
             RecoveryTask("auction_analysis", time(9, 25), time(10, 0), self._job_auction_analysis),
             RecoveryTask("noon_report", time(12, 30), time(14, 0), self._job_noon_report),
-            RecoveryTask("closing_report", time(15, 30), time(23, 59), self._job_closing_report),
+            RecoveryTask("closing_report", time(15, 35), time(23, 59), self._job_closing_report),
             RecoveryTask("holdings_news", time(17, 0), time(23, 59), self._job_holdings_news),
         ]
         return recover_missed_tasks(

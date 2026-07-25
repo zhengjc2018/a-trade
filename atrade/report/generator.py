@@ -10,6 +10,8 @@ from datetime import datetime
 from loguru import logger
 
 from atrade.data.quotes import QuoteProvider
+from atrade.monitor.t_executor import load_trades
+from atrade.monitor.t_replay import compute_round_trips, compute_stats
 from atrade.news.collector import NewsCollector
 
 
@@ -41,6 +43,13 @@ class ReportGenerator:
             f"_{now.strftime('%Y-%m-%d %H:%M')}_",
             "",
         ]
+
+        replay = self.generate_t_replay_report(now.strftime("%Y-%m-%d"))
+        replay_lines = replay.splitlines()
+        if replay_lines:
+            replay_lines[0] = replay_lines[0].replace("# ", "## ", 1)
+        lines.extend(replay_lines)
+        lines.append("")
 
         # A. 持仓概览
         lines.append("## 💼 持仓概览")
@@ -75,6 +84,56 @@ class ReportGenerator:
         lines.append("---")
         lines.append("_⚠️ 本日报由 a-trade 自动生成，仅供参考，投资有风险_")
 
+        return "\n".join(lines)
+
+    def generate_t_replay_report(self, date: str | None = None) -> str:
+        """生成当天已闭环 T 交易的简洁复盘。"""
+        trade_date = date or datetime.now().strftime("%Y-%m-%d")
+        trips = compute_round_trips(load_trades(), trade_date)
+        stats = compute_stats(trips)
+        lines = ["# 📈 做T复盘", ""]
+        if not trips:
+            lines.extend([
+                "⏸️ 今日无已闭环 T 交易",
+                "",
+                "- 说明：只有当天有效 BUY→SELL/STOP_LOSS 完成配对后才计入胜率。",
+            ])
+            return "\n".join(lines)
+
+        result = f"{stats['wins']}胜{stats['losses']}负"
+        if stats["breakevens"]:
+            result += f"{stats['breakevens']}平"
+        lines.append(
+            f"✅ 今日做T：{result}，胜率 **{stats['win_rate']:.1%}**，"
+            f"毛收益 **{stats['total_pnl']:+.2f} 元**"
+        )
+        profit_factor = stats["profit_factor"]
+        profit_factor_text = "∞" if profit_factor is None else f"{profit_factor:.2f}"
+        lines.extend([
+            "",
+            f"- 闭环：{stats['count']} 笔｜平均收益：{stats['avg_pnl_pct']:+.2%}｜盈亏比：{profit_factor_text}",
+            "- 口径：按实际记录股数计算毛收益，未扣手续费和滑点。",
+            "",
+            "| 股票 | 买入→卖出 | 股数 | 收益 | 持有 | 因子 |",
+            "|---|---:|---:|---:|---:|---|",
+        ])
+        for trip in trips[-5:]:
+            display_name = trip.name or trip.symbol
+            lines.append(
+                f"| {display_name}({trip.symbol}) | {trip.entry_price:.2f}→{trip.exit_price:.2f} | "
+                f"{trip.shares} | {trip.pnl:+.2f}元 ({trip.pnl_pct:+.2%}) | "
+                f"{trip.holding_minutes}分钟 | {trip.entry_factor} |"
+            )
+
+        if stats["by_factor"]:
+            factor_parts = [
+                f"{factor} {group['wins']}/{group['count']}胜"
+                for factor, group in sorted(
+                    stats["by_factor"].items(),
+                    key=lambda item: (-item[1]["count"], item[0]),
+                )[:3]
+            ]
+            lines.extend(["", "- 因子表现：" + "；".join(factor_parts)])
         return "\n".join(lines)
 
     def generate_morning_brief(self) -> str:
