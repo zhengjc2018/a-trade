@@ -22,6 +22,7 @@ class DeliveryAttempt:
     message_id: Optional[str] = None
     error: Optional[str] = None
     response_code: Optional[str] = None
+    at_all: bool = False
 
 
 @dataclass(frozen=True)

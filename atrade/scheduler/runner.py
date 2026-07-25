@@ -28,6 +28,7 @@ from atrade.config import (
 from atrade.monitor import ScreenMonitorRunner, TMonitorRunner, TradingCalendar
 from atrade.news.collector import NewsCollector
 from atrade.notify import DeliveryLedger, DeliveryRouter, DingTalkNotifier, OpenClawNotifier
+from atrade.notify.dingtalk import render_banner
 from atrade.report.generator import ReportGenerator
 from atrade.scheduler.recovery import RecoveryTask, recover_missed_tasks
 
@@ -278,10 +279,56 @@ class DailyScheduler:
     # 推送辅助
     # ============================================================
 
-    def _deliver(self, task_name: str, title: str, markdown: str, unique_suffix: str = ""):
+    # 默认需要 at_all 的任务（一天一次的"重要"通知）
+    AT_ALL_TASKS = frozenset({
+        "morning_brief",
+        "auction_analysis",
+        "noon_report",
+        "closing_report",
+        "holdings_news",
+        "t_status_morning",
+        "t_status_closing",
+    })
+
+    def _deliver(
+        self,
+        task_name: str,
+        title: str,
+        markdown: str,
+        unique_suffix: str = "",
+        *,
+        at_all: Optional[bool] = None,
+        banner_subtitle: str = "",
+    ):
+        """统一推送。
+
+        Args:
+            task_name: ledger 的 task_key 前缀。
+            title: 钉钉消息标题。
+            markdown: 推送正文。
+            unique_suffix: 时间后缀避免同日多次 dedup。
+            at_all: True 强制 @ 全体；False 显式不 @；None 走任务默认。
+            banner_subtitle: 横幅副标题（推送内容最顶部的醒目 banner）。
+        """
         day = datetime.now().strftime("%Y-%m-%d")
-        task_key = f"{task_name}:{day}{unique_suffix}"
-        return self.delivery_router.send(task_key, title, markdown, task_name=task_name)
+        # task_key 加 minute 精度，避免同日同一任务（例如手动重发）被判 delivered
+        minute = datetime.now().strftime("%H%M")
+        suffix = unique_suffix or f":{minute}"
+        task_key = f"{task_name}:{day}{suffix}"
+        if at_all is None:
+            at_all = task_name in self.AT_ALL_TASKS
+
+        # 顶部插入醒目 banner（避免被折叠 / 与 t_monitor 噪声混淆）
+        banner = render_banner(task_name, banner_subtitle or title)
+        content = f"{banner}\n{markdown}"
+
+        return self.delivery_router.send(
+            task_key,
+            title,
+            content,
+            task_name=task_name,
+            at_all=at_all,
+        )
 
     def _should_run_now(self) -> bool:
         return self.calendar.is_open_for_intraday_scan()

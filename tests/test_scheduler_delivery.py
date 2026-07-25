@@ -35,7 +35,10 @@ def test_morning_report_routes_through_delivery_router():
     args, kwargs = scheduler.delivery_router.send.call_args
     assert args[0].startswith("morning_brief:")
     assert args[1] == "🌅 a-trade 早盘快讯"
-    assert args[2] == "早报正文"
+    # 优化后 markdown 顶部应追加醒目 banner
+    assert "早报正文" in args[2]
+    assert "🟢" in args[2]
+    assert args[2].index("🟢") < args[2].index("早报正文")
     assert kwargs["task_name"] == "morning_brief"
 
 

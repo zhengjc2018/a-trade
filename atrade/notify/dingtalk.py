@@ -19,6 +19,7 @@ import os
 import re
 import time
 import urllib.parse
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -102,19 +103,27 @@ class DingTalkNotifier:
         }
         return self._post(payload)
 
-    def send_markdown(self, content: str, title: str = "a-trade 通知") -> dict:
+    def send_markdown(
+        self,
+        content: str,
+        title: str = "a-trade 通知",
+        at_all: Optional[bool] = None,
+    ) -> dict:
         """发送 Markdown。
 
-        钉钉 markdown 不支持表格渲染，建议先调用方用 render_for_dingtalk
-        把表格转项目符号或对齐文本。
+        Args:
+            content: Markdown 正文（已被 render_for_dingtalk 转换）。
+            title: 推送标题，会被钉钉作为消息卡片预览。
+            at_all: 覆盖默认 at_all（本条消息是否 @ 全体）。None 表示用实例默认。
         """
+        effective_at_all = self.at_all if at_all is None else bool(at_all)
         payload = {
             "msgtype": "markdown",
             "markdown": {
                 "title": title,
                 "text": self._ensure_keyword(content),
             },
-            "at": {"isAtAll": self.at_all},
+            "at": {"isAtAll": effective_at_all},
         }
         return self._post(payload)
 
@@ -162,6 +171,50 @@ def _render_table_row(headers: list[str], values: list[str]) -> str:
     return "- " + "；".join(
         f"**{header}**：{value}" for header, value in pairs
     )
+
+
+# 任务 → 视觉横幅（emoji + 加粗 + 颜色 emoji 用于钉钉本地渲染）
+_BANNERS: dict[str, tuple[str, str]] = {
+    # task_name: (level_emoji, title)
+    "morning_brief":    ("🟢", "a-trade 早盘快讯"),
+    "auction_analysis": ("🟡", "a-trade 集合竞价"),
+    "noon_report":      ("🟠", "a-trade 午盘报告"),
+    "closing_report":   ("🔴", "a-trade 收盘日报"),
+    "holdings_news":    ("⚪", "a-trade 持仓新闻"),
+    "delivery_heartbeat": ("⚙️", "a-trade 通知心跳"),
+    "t_monitor":        ("📊", "a-trade 做T信号"),
+    "t_status_morning": ("📈", "a-trade 上午做T汇总"),
+    "t_status_closing": ("📉", "a-trade 收盘做T汇总"),
+    "screen_monitor":   ("🔍", "a-trade 盘中选股"),
+    "backtest":         ("🧪", "a-trade 回测报告"),
+}
+
+
+def render_banner(
+    task_name: str,
+    subtitle: str = "",
+    *,
+    time_stamp: Optional[str] = None,
+) -> str:
+    """生成钉钉顶端醒目横幅，避免被折叠 / 与 t_monitor 噪声混淆。
+
+    Returns:
+        一段 Markdown 字符串，应放在推送内容最前。
+    """
+    level_emoji, title = _BANNERS.get(
+        task_name, ("📣", f"a-trade {task_name}")
+    )
+    ts = time_stamp or datetime.now().strftime("%Y-%m-%d %H:%M")
+    if subtitle:
+        second_line = f"**🕒 {ts}** ｜ {subtitle}"
+    else:
+        second_line = f"**🕒 {ts}**"
+    parts = [
+        f"# {level_emoji} {title}",
+        second_line,
+        "---",
+    ]
+    return "\n\n".join(parts)
 
 
 def render_for_dingtalk(md: str) -> str:
