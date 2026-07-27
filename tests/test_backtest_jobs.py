@@ -188,3 +188,71 @@ def test_runner_cancel_queued(runner_factory):
     time.sleep(0.8)
     statuses = {runner.status(jid)["status"] for jid in ["j1", "j2", "j3"]}
     assert JobStatus.CANCELLED.value in statuses
+
+
+def test_portfolio_backtest_skips_zero_qty_holdings(monkeypatch):
+    """portfolio 回测遇到 quantity=0 的持仓应跳过而非失败。"""
+    from atrade.backtest import api as bt_api
+    from atrade.backtest.jobs import BacktestJob, make_job_id
+
+    def fake_load_holdings():
+        return [
+            {"symbol": "002436", "name": "兴森科技",
+             "cost_price": 41.0, "quantity": 0, "buy_date": "", "note": ""},
+            {"symbol": "600522", "name": "中天科技",
+             "cost_price": 61.86, "quantity": 100, "buy_date": "", "note": ""},
+        ]
+
+    monkeypatch.setattr("atrade.config.load_holdings", fake_load_holdings)
+
+    sweep_calls = []
+
+    def fake_run_sweep(symbol, cost, qty, grid, **kw):
+        sweep_calls.append((symbol, qty))
+        # 返回至少 1 个空 entry 避免 IndexError
+        from atrade.backtest.sweep import SweepEntry, _empty_result
+        return [SweepEntry(
+            take_profit_pct=0.03, stop_loss_pct=0.02,
+            result=_empty_result(symbol, "数据不足"),
+        )]
+
+    monkeypatch.setattr("atrade.backtest.api.run_sweep", fake_run_sweep)
+
+    job = BacktestJob(
+        job_id=make_job_id(), type="portfolio", symbol="组合",
+        request={"start_date": "2024-01-01", "end_date": "2026-07-27", "scale": "1d", "push": False},
+    )
+    executor = bt_api._build_executor(notifier=None)
+    result = executor(job)
+
+    # 只对 quantity > 0 的 600522 调用 sweep
+    assert sweep_calls == [("600522", 100)]
+    # summary 应记录 skipped count
+    assert result["summary"]["portfolio_count"] == 1
+    assert result["summary"]["skipped_count"] == 1
+
+
+def test_portfolio_backtest_raises_when_all_zero(monkeypatch):
+    """所有持仓都为 0 时 portfolio 回测应明确报错（无标的可测）。"""
+    from atrade.backtest import api as bt_api
+    from atrade.backtest.jobs import BacktestJob, make_job_id
+
+    def fake_load_holdings():
+        return [
+            {"symbol": "002436", "name": "兴森", "cost_price": 41.0,
+             "quantity": 0, "buy_date": "", "note": ""},
+            {"symbol": "600522", "name": "中天", "cost_price": 61.86,
+             "quantity": 0, "buy_date": "", "note": ""},
+        ]
+    monkeypatch.setattr("atrade.config.load_holdings", fake_load_holdings)
+
+    job = BacktestJob(
+        job_id=make_job_id(), type="portfolio", symbol="组合",
+        request={"start_date": "2024-01-01", "end_date": "2026-07-27", "scale": "1d", "push": False},
+    )
+    executor = bt_api._build_executor(notifier=None)
+    try:
+        executor(job)
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "全部为 0 股" in str(exc)

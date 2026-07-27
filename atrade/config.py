@@ -68,8 +68,8 @@ def _validate_holding(item: Any, idx: int) -> dict:
     qty = item.get("quantity")
     if cost is None or not isinstance(cost, (int, float)) or cost <= 0:
         raise ConfigError(f"holdings[{idx}].cost_price 必须 > 0，实际: {cost!r}")
-    if qty is None or not isinstance(qty, int) or qty <= 0:
-        raise ConfigError(f"holdings[{idx}].quantity 必须为正整数，实际: {qty!r}")
+    if qty is None or not isinstance(qty, int) or qty < 0:
+        raise ConfigError(f"holdings[{idx}].quantity 必须为非负整数，实际: {qty!r}")
     return {
         "symbol": code,
         "name": str(item.get("name", "")),
@@ -124,7 +124,7 @@ def _validate_t_monitor_symbol(item: Any, idx: int) -> dict:
     if "quantity" in item:
         quantity = item["quantity"]
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
-            raise ConfigError(f"{path}.quantity 必须为正整数，实际: {quantity!r}")
+            raise ConfigError(f"{path}.quantity 必须为非负整数，实际: {quantity!r}")
         result["quantity"] = int(quantity)
     trailing = _validate_trailing(item.get("trailing"), f"{path}.trailing", fill_defaults=False)
     if trailing:

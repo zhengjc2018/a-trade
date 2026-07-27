@@ -108,12 +108,16 @@ def _build_executor(
         if job.type == "portfolio":
             # portfolio：依次走 sweep 路径，每只股一个报告
             from atrade.config import load_holdings
-            holdings = load_holdings()
-            if not holdings:
-                raise ValueError("当前无持仓")
+            all_holdings = load_holdings()
+            active_holdings = [h for h in all_holdings if int(h.get("quantity", 0)) > 0]
+            skipped = [h for h in all_holdings if int(h.get("quantity", 0)) <= 0]
+            if not active_holdings:
+                raise ValueError(
+                    f"当前 {len(all_holdings)} 个持仓全部为 0 股（已平仓），无可回测标的"
+                )
             pieces = []
             summaries = []
-            for h in holdings:
+            for h in active_holdings:
                 grid = SweepGrid()
                 entries = run_sweep(
                     h["symbol"], h["cost_price"], h["quantity"], grid,
@@ -126,8 +130,26 @@ def _build_executor(
                     + sweep_to_markdown(h["symbol"], entries, h["cost_price"], h["quantity"])
                 )
                 summaries.append(_summary_from_sweep(h["symbol"], entries))
-            summary = {"portfolio_count": len(holdings), "items": summaries}
-            md = "# 📊 持仓组合扫描\n\n" + "\n\n---\n\n".join(pieces)
+            skipped_note = ""
+            if skipped:
+                skipped_lines = [
+                    f"- {h['name'] or h['symbol']} ({h['symbol']}): 持仓 0 股，已跳过"
+                    for h in skipped
+                ]
+                skipped_note = (
+                    "## ⚠️ 已跳过（持仓 0 股）\n\n" + "\n".join(skipped_lines) + "\n\n---\n\n"
+                )
+            summary = {
+                "portfolio_count": len(active_holdings),
+                "skipped_count": len(skipped),
+                "items": summaries,
+            }
+            md = (
+                "# 📊 持仓组合扫描\n\n"
+                f"_扫描 {len(active_holdings)} 个持仓，跳过 {len(skipped)} 个已平仓标的_\n\n"
+                f"{skipped_note}"
+                + "\n\n---\n\n".join(pieces)
+            )
             path = report_store.write(job.job_id, md)
             if request.get("push") and notifier:
                 try:

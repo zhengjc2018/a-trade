@@ -77,10 +77,27 @@ def test_load_holdings_rejects_zero_cost(isolated_config):
         load_holdings()
 
 
-def test_load_holdings_rejects_zero_qty(isolated_config):
+def test_load_holdings_accepts_zero_qty_as_closed_position(isolated_config):
+    """quantity=0 表示已平仓，应允许保留在 holdings 中。
+
+    设计：用户卖出全部后，系统仍记录该仓位（quantity=0 + updated_at），
+    portfolio 回测会自动跳过。
+    """
     (isolated_config / "holdings.json").write_text(json.dumps({
         "holdings": [
             {"symbol": "600001", "cost_price": 5.0, "quantity": 0}
+        ]
+    }))
+    holdings = load_holdings()
+    assert len(holdings) == 1
+    assert holdings[0]["quantity"] == 0
+
+
+def test_load_holdings_rejects_negative_qty(isolated_config):
+    """quantity<0 仍应被拒绝。"""
+    (isolated_config / "holdings.json").write_text(json.dumps({
+        "holdings": [
+            {"symbol": "600001", "cost_price": 5.0, "quantity": -1}
         ]
     }))
     with pytest.raises(ConfigError, match="quantity"):
