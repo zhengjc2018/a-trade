@@ -161,6 +161,17 @@ class DailyScheduler:
             misfire_grace_time=1800,
         )
 
+        # 早盘选股：每个交易日 9:26（竞价分析完成后）
+        # 覆盖 9:00-9:30 的空档，开盘前给用户推荐候选清单
+        self.scheduler.add_job(
+            self._job_pre_market_screen,
+            CronTrigger(hour=9, minute=26),
+            id="pre_market_screen",
+            name="早盘选股",
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+
         # 早盘快讯：每个交易日 8:00
         self.scheduler.add_job(
             self._job_delivery_heartbeat,
@@ -250,6 +261,7 @@ class DailyScheduler:
         for hour, minute, task_name, callback in [
             (8, 5, "morning_brief", self._job_morning_brief),
             (9, 30, "auction_analysis", self._job_auction_analysis),
+            (9, 35, "pre_market_screen", self._job_pre_market_screen),
             (12, 35, "noon_report", self._job_noon_report),
             (15, 40, "closing_report", self._job_closing_report),
             (17, 5, "holdings_news", self._job_holdings_news),
@@ -408,6 +420,29 @@ class DailyScheduler:
         report = self.report_gen.generate_auction_report()
         suffix = f":{datetime.now().strftime('%H%M')}"
         return self._deliver("auction_analysis", "📈 a-trade 竞价分析", report, suffix)
+
+    def _job_pre_market_screen(self):
+        """早盘选股推送：每个交易日 9:26 跑，覆盖 9:00-9:30 空档。
+
+        与盘中选股的区别：
+        - 不检查 is_open_for_intraday_scan（9:26 时还未开盘）
+        - 仍会刷新 snapshot（取前一日收盘 + 集合竞价累计）
+        - 推送标题加"早盘"以区分盘中选股
+        """
+        if not self.calendar.is_trade_day():
+            return
+        logger.info("⏰ 触发: 早盘选股")
+        md = self.screen_runner.run_once()
+        if not md:
+            return
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver(
+            "pre_market_screen",
+            "🌅 a-trade 早盘选股",
+            md,
+            suffix,
+            banner_subtitle="今日开盘前候选清单",
+        )
 
     def _job_screen_monitor(self):
         if not self.calendar.is_open_for_intraday_scan():

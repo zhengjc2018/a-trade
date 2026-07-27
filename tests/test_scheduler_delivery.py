@@ -128,7 +128,9 @@ def test_scheduler_registers_reset_and_closing_at_1535():
     jobs = {job.id: job for job in scheduler.scheduler.get_jobs()}
     assert "t_state_reset" in jobs
     assert "t_replay" in jobs  # 做T复盘独立推送（15:36）
+    assert "pre_market_screen" in jobs  # 早盘选股 9:26
     assert "hour='9', minute='30'" in str(jobs["t_state_reset"].trigger)
+    assert "hour='9', minute='26'" in str(jobs["pre_market_screen"].trigger)
     assert "hour='15', minute='35'" in str(jobs["closing_report"].trigger)
     assert "hour='15', minute='36'" in str(jobs["t_replay"].trigger)
     assert "hour='15', minute='40'" in str(jobs["closing_report_guard"].trigger)
