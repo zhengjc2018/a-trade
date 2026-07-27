@@ -35,20 +35,34 @@ class TrendSnapshot:
     error: str = ""
 
 
+DEFAULT_BUY_MOMENTUM_THRESHOLD_PCT = 5.0
+
+
 class MarketRegimeFilter:
-    """拉取并短期缓存个股/指数日线趋势。"""
+    """拉取并短期缓存个股/指数日线趋势。
+
+    Args:
+        buy_momentum_threshold_pct: 个股 5 日动量阈值（百分比，单位 %）。
+            当个股 drop_pct_5d ≥ 该阈值时，BUY 双闸门（个股 trend + 大盘 MA20<MA60）
+            都会被短路放行，让"短期已启动"的行情不被中期下降通道挡掉。
+            大盘 5 日跌幅熔断（< -3%）始终生效。
+    """
 
     def __init__(
         self,
         history: Optional[HistoryProvider] = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        buy_momentum_threshold_pct: float = DEFAULT_BUY_MOMENTUM_THRESHOLD_PCT,
     ):
         if ttl_seconds <= 0:
             raise ValueError("ttl_seconds 必须 > 0")
+        if buy_momentum_threshold_pct < 0:
+            raise ValueError("buy_momentum_threshold_pct 必须 >= 0")
         self.history = history or HistoryProvider()
         self.ttl_seconds = int(ttl_seconds)
         self.clock = clock
+        self.buy_momentum_threshold_pct = float(buy_momentum_threshold_pct)
         self._cache: dict[str, tuple[float, TrendSnapshot]] = {}
         self._lock = threading.RLock()
 
@@ -143,8 +157,16 @@ def allows_signal(
     signal_type: str,
     symbol_trend: TrendSnapshot,
     market_gate: TrendSnapshot,
+    *,
+    buy_momentum_threshold_pct: float = DEFAULT_BUY_MOMENTUM_THRESHOLD_PCT,
 ) -> tuple[bool, str]:
-    """判断普通信号是否通过个股日线与大盘双闸门。"""
+    """判断普通信号是否通过个股日线与大盘双闸门。
+
+    5 日动量短路（仅 BUY 信号）：
+        当 symbol_trend.drop_pct_5d ≥ buy_momentum_threshold_pct 时，
+        跳过个股 trend 与大盘 MA20<MA60 两道闸门（认为"短期行情已启动"）。
+        大盘 5 日跌幅熔断（< -3%）始终生效。
+    """
     normalized_type = str(signal_type).lower()
     if normalized_type in {"stop_loss", "take_profit"}:
         return True, "风险退出始终放行"
@@ -157,6 +179,17 @@ def allows_signal(
 
     if not symbol_trend.data_available:
         return False, f"个股日线趋势不可用: {symbol_trend.error or '未知原因'}"
+
+    # 5 日动量短路：短期大涨 → 跳过双闸门（trend + 大盘 MA20<MA60）
+    momentum_bypass = (
+        symbol_trend.drop_pct_5d >= buy_momentum_threshold_pct
+    )
+    if momentum_bypass:
+        return True, (
+            f"5 日动量 {symbol_trend.drop_pct_5d:+.2f}% ≥ "
+            f"{buy_momentum_threshold_pct:.2f}%，触发短路放行"
+        )
+
     if symbol_trend.trend != "up":
         return False, "个股日线未满足 MA20>MA60 且 MA20 向上"
     if market_gate.data_available and market_gate.ma20 < market_gate.ma60:

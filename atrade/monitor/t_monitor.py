@@ -67,6 +67,7 @@ class TMonitorConfig:
     candidate_ttl_minutes: int = 30
     allow_non_main_board: bool = False  # 默认排除 ST/创业板/科创板/京板
     lots_per_trade: float = 1.0
+    buy_momentum_threshold_pct: float = 5.0  # 个股 5 日动量 ≥ 此值则 BUY 双闸门短路
     trailing_defaults: dict = field(default_factory=dict)
     symbols: list[TMonitorItem] = field(default_factory=list)
 
@@ -87,6 +88,9 @@ class TMonitorRunner:
         cfg = config or {}
         trailing_defaults = dict(cfg.get("trailing_defaults") or {})
         lots_per_trade = float(cfg.get("lots_per_trade", 1.0))
+        buy_momentum_threshold = float(
+            cfg.get("buy_momentum_threshold_pct", 5.0)
+        )
         self.config = TMonitorConfig(
             enabled=bool(cfg.get("enabled", True)),
             scan_interval_minutes=int(cfg.get("scan_interval_minutes", 2)),
@@ -96,6 +100,7 @@ class TMonitorRunner:
             candidate_ttl_minutes=int(cfg.get("candidate_ttl_minutes", 30)),
             allow_non_main_board=bool(cfg.get("allow_non_main_board", False)),
             lots_per_trade=lots_per_trade,
+            buy_momentum_threshold_pct=buy_momentum_threshold,
             trailing_defaults=trailing_defaults,
             symbols=[
                 TMonitorItem(
@@ -120,7 +125,12 @@ class TMonitorRunner:
             scale=self.config.scale,
             datalen=self.config.datalen,
         ).engine
-        self.regime_filter = regime_filter or MarketRegimeFilter()
+        self.regime_filter = (
+            regime_filter
+            or MarketRegimeFilter(
+                buy_momentum_threshold_pct=buy_momentum_threshold,
+            )
+        )
         self.t_state_store = t_state_store or TStateStore()
         self._state = self._load_state()
         self.confirmer = confirmer or TwoStageConfirmer(
@@ -275,6 +285,9 @@ class TMonitorRunner:
                         sig.signal_type.value,
                         symbol_trend or market_gate,
                         market_gate,
+                        buy_momentum_threshold_pct=(
+                            self.config.buy_momentum_threshold_pct
+                        ),
                     )
                     if not allowed:
                         self.filtered_count += 1

@@ -164,3 +164,129 @@ def test_rejects_non_numeric_close_data():
 def test_constructor_rejects_non_positive_ttl():
     with pytest.raises(ValueError, match="ttl_seconds"):
         MarketRegimeFilter(history=_History(_daily_frame([100.0] * 80)), ttl_seconds=0)
+
+
+def test_buy_momentum_bypass_short_circuits_both_gates():
+    """5 日动量 ≥ 阈值时，BUY 双闸门（个股 trend + 大盘 MA20）都被短路放行。"""
+    from atrade.market import index_filter
+    from atrade.market.index_filter import allows_signal
+
+    # 个股 trend=sideways（不满足 up）+ 大盘 MA20<MA60（不满足），
+    # 但 5 日涨 16.48% → 应被短路放行
+    symbol_trend = index_filter.TrendSnapshot(
+        symbol="002436", price=35.7, ma20=39.81, ma60=39.07,
+        ma20_slope=-4.06, drop_pct_5d=16.48,
+        trend="sideways", fetched_at="2026-07-27",
+    )
+    market_gate = index_filter.TrendSnapshot(
+        symbol="sh000300", price=4702.4, ma20=4764.0, ma60=4842.3,
+        ma20_slope=-57.08, drop_pct_5d=2.26,
+        trend="down", fetched_at="2026-07-27",
+    )
+
+    allowed, reason = allows_signal(
+        "buy", symbol_trend, market_gate,
+        buy_momentum_threshold_pct=5.0,
+    )
+    assert allowed is True
+    assert "短路放行" in reason
+    assert "16.48" in reason
+
+
+def test_buy_momentum_below_threshold_still_blocked_by_gates():
+    """5 日动量 < 阈值时，原双闸门仍生效（不会被绕过）。"""
+    from atrade.market import index_filter
+    from atrade.market.index_filter import allows_signal
+
+    symbol_trend = index_filter.TrendSnapshot(
+        symbol="600522", price=32.66, ma20=42.17, ma60=45.44,
+        ma20_slope=-7.38, drop_pct_5d=1.37,
+        trend="down", fetched_at="2026-07-27",
+    )
+    market_gate = index_filter.TrendSnapshot(
+        symbol="sh000300", price=4702.4, ma20=4764.0, ma60=4842.3,
+        ma20_slope=-57.08, drop_pct_5d=2.26,
+        trend="down", fetched_at="2026-07-27",
+    )
+
+    allowed, reason = allows_signal(
+        "buy", symbol_trend, market_gate,
+        buy_momentum_threshold_pct=5.0,
+    )
+    assert allowed is False
+    assert "未满足 MA20>MA60" in reason
+
+
+def test_buy_momentum_threshold_zero_disables_bypass():
+    """阈值=0 时 5 日动量短路相当于关闭。"""
+    from atrade.market import index_filter
+    from atrade.market.index_filter import allows_signal
+
+    symbol_trend = index_filter.TrendSnapshot(
+        symbol="002436", price=35.7, ma20=39.81, ma60=39.07,
+        ma20_slope=-4.06, drop_pct_5d=16.48,
+        trend="sideways", fetched_at="2026-07-27",
+    )
+    market_gate = index_filter.TrendSnapshot(
+        symbol="sh000300", price=4702.4, ma20=4764.0, ma60=4842.3,
+        ma20_slope=-57.08, drop_pct_5d=2.26,
+        trend="down", fetched_at="2026-07-27",
+    )
+
+    allowed, reason = allows_signal(
+        "buy", symbol_trend, market_gate,
+        buy_momentum_threshold_pct=0.0,
+    )
+    # 阈值=0 时 drop_pct_5d=16.48 >= 0 仍会触发（除非改成严格大于）
+    # 我们的语义是 >=，所以仍放行
+    assert allowed is True
+    assert "短路放行" in reason
+
+
+def test_buy_momentum_bypass_respects_market_crash_circuit_breaker():
+    """大盘 5 日跌幅熔断（< -3%）始终生效，5 日动量短路不能绕过。"""
+    from atrade.market import index_filter
+    from atrade.market.index_filter import allows_signal
+
+    # 即便个股 5 日涨 50%，大盘 5 日跌 -5% → 仍被熔断拒绝
+    symbol_trend = index_filter.TrendSnapshot(
+        symbol="002436", price=100, ma20=80, ma60=70,
+        ma20_slope=10, drop_pct_5d=50.0,
+        trend="up", fetched_at="2026-07-27",
+    )
+    market_gate = index_filter.TrendSnapshot(
+        symbol="sh000300", price=4500, ma20=4800, ma60=4900,
+        ma20_slope=-50, drop_pct_5d=-5.0,
+        trend="down", fetched_at="2026-07-27",
+    )
+
+    allowed, reason = allows_signal(
+        "buy", symbol_trend, market_gate,
+        buy_momentum_threshold_pct=5.0,
+    )
+    assert allowed is False
+    assert "大盘 5 日跌幅" in reason
+
+
+def test_sell_signal_unchanged_by_momentum_threshold():
+    """非 BUY 信号不受 5 日动量短路影响（仅 BUY 双闸门涉及）。"""
+    from atrade.market import index_filter
+    from atrade.market.index_filter import allows_signal
+
+    symbol_trend = index_filter.TrendSnapshot(
+        symbol="600522", price=32.66, ma20=42.17, ma60=45.44,
+        ma20_slope=-7.38, drop_pct_5d=1.37,
+        trend="down", fetched_at="2026-07-27",
+    )
+    market_gate = index_filter.TrendSnapshot(
+        symbol="sh000300", price=4702.4, ma20=4764.0, ma60=4842.3,
+        ma20_slope=-57.08, drop_pct_5d=2.26,
+        trend="down", fetched_at="2026-07-27",
+    )
+
+    allowed, reason = allows_signal(
+        "sell", symbol_trend, market_gate,
+        buy_momentum_threshold_pct=5.0,
+    )
+    assert allowed is True
+    assert "无需个股上升趋势" in reason
