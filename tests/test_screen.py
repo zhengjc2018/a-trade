@@ -181,3 +181,84 @@ def test_fetch_market_snapshot_field_mapping(monkeypatch):
     assert "f10" in fields_str          # 量比
     assert "f23" in fields_str          # 市净率
     assert captured["fltt"] == "2"
+
+
+def test_close_above_ma5_at_or_above_ma5_when_tolerance_zero():
+    """tolerance_pct=0 时 ≥ MA5 即可。"""
+    import pandas as pd
+
+    from scripts import screen
+
+    class _StubHistory:
+        def fetch_with_cache(self, *a, **kw):
+            idx = pd.date_range("2026-07-01", periods=10, freq="D")
+            return pd.DataFrame({
+                "date": idx,
+                "open": [10.0] * 10,
+                "high": [10.5] * 10,
+                "low": [9.5] * 10,
+                "close": [10.0] * 10,
+                "volume": [1000] * 10,
+            })
+
+    monkey = __import__("pytest").MonkeyPatch()
+    monkey.setattr(screen, "HistoryProvider", _StubHistory)
+    try:
+        # MA5 = 10.0, current price = 10.0（等于 MA5）→ True（边界 ≥）
+        assert screen.close_above_ma5("000001", 10.0, tolerance_pct=0.0) is True
+        # current price = 10.05 → 高于 MA5 → True
+        assert screen.close_above_ma5("000001", 10.05, tolerance_pct=0.0) is True
+        # current price = 9.95 → 低于 MA5 → False
+        assert screen.close_above_ma5("000001", 9.95, tolerance_pct=0.0) is False
+    finally:
+        monkey.undo()
+
+
+def test_close_above_ma5_with_1pct_tolerance():
+    """tolerance_pct=0.01 允许当前价略低于 MA5（捕获刚启动的票）。"""
+    import pandas as pd
+
+    from scripts import screen
+
+    class _StubHistory:
+        def fetch_with_cache(self, *a, **kw):
+            idx = pd.date_range("2026-07-01", periods=10, freq="D")
+            return pd.DataFrame({
+                "date": idx,
+                "open": [10.0] * 10,
+                "high": [10.5] * 10,
+                "low": [9.5] * 10,
+                "close": [10.0] * 10,
+                "volume": [1000] * 10,
+            })
+
+    monkey = __import__("pytest").MonkeyPatch()
+    monkey.setattr(screen, "HistoryProvider", _StubHistory)
+    try:
+        # MA5=10, tolerance=1% → threshold=9.90
+        # 9.91 → 略低于 MA5 但 ≥ 9.90 → True（捕捉刚启动）
+        assert screen.close_above_ma5("000001", 9.91, tolerance_pct=0.01) is True
+        # 9.89 → 低于 threshold → False（明显下跌趋势）
+        assert screen.close_above_ma5("000001", 9.89, tolerance_pct=0.01) is False
+        # 10.05 → 高于 MA5 → True
+        assert screen.close_above_ma5("000001", 10.05, tolerance_pct=0.01) is True
+    finally:
+        monkey.undo()
+
+
+def test_close_above_ma5_handles_insufficient_data():
+    """数据不足时返回 False（不抛异常）。"""
+    import pandas as pd
+
+    from scripts import screen
+
+    class _StubHistory:
+        def fetch_with_cache(self, *a, **kw):
+            return pd.DataFrame()
+
+    monkey = __import__("pytest").MonkeyPatch()
+    monkey.setattr(screen, "HistoryProvider", _StubHistory)
+    try:
+        assert screen.close_above_ma5("000001", 10.0, tolerance_pct=0.01) is False
+    finally:
+        monkey.undo()

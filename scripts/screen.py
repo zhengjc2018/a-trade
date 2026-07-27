@@ -28,7 +28,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from functools import lru_cache
@@ -43,7 +42,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from atrade.data import HistoryProvider, fetch_snap
 from atrade.indicators import add_all_indicators
-
 
 SNAPSHOT_DIR = Path(__file__).resolve().parents[1] / "data" / "cache"
 SNAPSHOT_FILE = SNAPSHOT_DIR / "market_snapshot.csv"
@@ -208,20 +206,38 @@ def has_good_fundamentals(code: str, snap_row: pd.Series) -> bool:
     return True
 
 
-def close_above_ma5(code: str, current_price: float, history: Optional[HistoryProvider] = None) -> bool:
-    """当前价站上 5 日均线（粗筛）。"""
+# MA5 容差：允许当前价略微低于 MA5（捕获"今日盘中刚启动"的票）
+MA5_TOLERANCE_PCT = 0.01
+
+
+def close_above_ma5(
+    code: str,
+    current_price: float,
+    history: Optional[HistoryProvider] = None,
+    tolerance_pct: float = MA5_TOLERANCE_PCT,
+) -> bool:
+    """当前价站上 5 日均线，允许 ±1% 容差。
+
+    设计目的：MA5 是过去 5 个交易日收盘均价（不含今天）。
+    对"今天盘中放量启动"的票，MA5 还未更新，会过滤掉它们。
+    因此允许 ±1% 容差，捕获"刚启动但还在追赶 MA5"的候选。
+
+    Args:
+        tolerance_pct: 容差（百分比）。0 = 严格 > MA5；0.01 = 允许低 1%。
+    """
     try:
         hp = history or HistoryProvider()
         df = hp.fetch_with_cache(code, scale="1d", datalen=30, use_snapshot=False)
-        if df.empty or len(df) < 5 or "MA5" not in df.columns:
+        if df.empty or len(df) < 5:
             return False
         hist = add_all_indicators(df)
-        if hist.empty:
+        if hist.empty or "MA5" not in hist.columns:
             return False
         ma5 = hist["MA5"].iloc[-1]
         if pd.isna(ma5):
             return False
-        return float(current_price) > float(ma5)
+        threshold = float(ma5) * (1 - tolerance_pct)
+        return float(current_price) >= threshold
     except Exception as e:
         logger.debug(f"{code} MA5 判断失败: {e}")
         return False
