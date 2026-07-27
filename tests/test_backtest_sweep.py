@@ -110,17 +110,28 @@ def test_to_markdown_includes_top3_and_recommendation():
 
 
 def test_run_sweep_uses_take_profit_and_stop_loss(monkeypatch):
-    """run_sweep 应正确把每个组合的 take_profit/stop_loss 透传给 T0Simulator。"""
+    """run_sweep 应正确把每个组合的 take_profit/stop_loss 注入到 T0Simulator.__init__。"""
     seen = []
 
-    def fake_run(self, symbol, cost, qty, **kwargs):
+    def fake_init(self, **kwargs):
         seen.append((kwargs.get("take_profit_pct"), kwargs.get("stop_loss_pct")))
+        # 跳过真实初始化（避免 history/engine 副作用）
+        self.history = None
+        self.engine = None
+        self.scale = kwargs.get("scale", "1d")
+        self.datalen = kwargs.get("datalen", 600)
+
+    def fake_run(self, symbol, cost, qty, **kwargs):
         return _entry(0.03, 0.02, 5, 1).result
 
+    monkeypatch.setattr("atrade.backtest.sweep.T0Simulator.__init__", fake_init)
     monkeypatch.setattr("atrade.backtest.sweep.T0Simulator.run", fake_run)
     run_sweep("000001", 10.0, 100, SweepGrid())
-    assert all(tp is not None and sl is not None for tp, sl in seen)
-    assert len(seen) == len(SweepGrid().combos())
+    combos = SweepGrid().combos()
+    assert len(seen) == len(combos)
+    for (tp, sl), (exp_tp, exp_sl) in zip(seen, combos):
+        assert tp == exp_tp
+        assert sl == exp_sl
 
 
 def test_run_sweep_progress_callback(monkeypatch):

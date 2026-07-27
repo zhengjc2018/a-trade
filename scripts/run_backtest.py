@@ -31,12 +31,12 @@ def run_one(symbol: str, cost: float, qty: int, args) -> T0BacktestResult:
         fee_commission=args.fee_commission,
         fee_stamp_duty_sell=args.fee_stamp_duty_sell,
         slippage_pct=args.slippage,
+        take_profit_pct=getattr(args, "take_profit", None),
+        stop_loss_pct=getattr(args, "stop_loss", None),
     )
     return sim.run(symbol, cost, qty,
                    start_date=args.start.replace("-", ""),
-                   end_date=args.end.replace("-", ""),
-                   take_profit_pct=args.take_profit if hasattr(args, "take_profit") else None,
-                   stop_loss_pct=args.stop_loss if hasattr(args, "stop_loss") else None)
+                   end_date=args.end.replace("-", ""))
 
 
 def run_sweep_one(symbol: str, cost: float, qty: int, args):

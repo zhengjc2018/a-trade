@@ -139,8 +139,13 @@ def run_sweep(
 
     entries: list[SweepEntry] = []
     total = len(combos)
-    sim = T0Simulator(scale=scale, datalen=600)  # 共享 history 与 engine
     for idx, (tp, sl) in enumerate(combos, start=1):
+        sim = T0Simulator(
+            scale=scale,
+            datalen=600,
+            take_profit_pct=tp,
+            stop_loss_pct=sl,
+        )
         try:
             result = sim.run(
                 symbol,
@@ -148,8 +153,6 @@ def run_sweep(
                 quantity,
                 start_date=start_date.replace("-", ""),
                 end_date=end_dt.replace("-", ""),
-                take_profit_pct=tp,
-                stop_loss_pct=sl,
             )
         except Exception:
             result = _empty_result(symbol, "数据不足")

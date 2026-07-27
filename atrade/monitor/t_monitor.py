@@ -133,6 +133,7 @@ class TMonitorRunner:
         self.skipped_count = 0  # TTL 命中跳过
         self.error_count = 0
         self.filtered_count = 0
+        self.holdings_skipped_count = 0  # 持仓/已交易过滤掉的卖出候选
 
     def _load_state(self) -> dict:
         if not _STATE_FILE.exists():
@@ -189,6 +190,53 @@ class TMonitorRunner:
             bucket = self._state.setdefault("sent", {}).setdefault(symbol, [])
             bucket.append({"key": key, "sent_at": now_iso})
         self._save_state()
+
+    def _filter_candidates_by_holdings(
+        self, candidates: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        """按"持仓量 + 今日已交易"过滤卖出/止损候选。
+
+        设计目的：避免同一只股票当天重复推送卖出告警。
+        逻辑：
+          - SELL / STOP_LOSS 信号检查 holdings.quantity 是否 ≥ 1 手
+            （lots_per_trade * 100 股）；不足 → 丢弃
+          - 同一只股票同一天已执行过 sell/stop_loss → 丢弃（防"今天一直卖"）
+          - BUY 不受影响（建仓方向）
+          - 不在 holdings 中的标的 → 直接丢弃卖出信号
+
+        返回 (保留的候选, 被过滤掉的候选含原因) 元组，方便日志与统计。
+        """
+        from .t_executor import _already_traded_today, _current_holding
+
+        lots = max(0.01, float(self.config.lots_per_trade))
+        shares_per_lot = max(1, int(round(lots * 100)))
+        kept: list[dict] = []
+        dropped: list[dict] = []
+        for cand in candidates:
+            symbol = str(cand.get("symbol", "")).zfill(6)
+            sig = str(cand.get("signal_type", "watch")).lower()
+            if sig not in {"sell", "stop_loss"}:
+                kept.append(cand)
+                continue
+            holding = _current_holding(symbol)
+            if holding is None:
+                dropped.append({**cand, "_drop_reason": "未配置持仓"})
+                continue
+            qty = int(holding.get("quantity", 0))
+            if qty < shares_per_lot:
+                dropped.append({
+                    **cand,
+                    "_drop_reason": f"持仓 {qty} 股 < {shares_per_lot} 股",
+                })
+                continue
+            if _already_traded_today(symbol, sig):
+                dropped.append({
+                    **cand,
+                    "_drop_reason": f"今日已执行过 {sig.upper()}",
+                })
+                continue
+            kept.append(cand)
+        return kept, dropped
 
     def _scan_candidates(self) -> list[dict]:
         """扫描并应用个股日线、大盘双闸门和 T 仓风险退出。"""
@@ -292,6 +340,15 @@ class TMonitorRunner:
         candidates = self._scan_candidates()
         self.candidate_count += len(candidates)
 
+        candidates, dropped = self._filter_candidates_by_holdings(candidates)
+        if dropped:
+            self.holdings_skipped_count += len(dropped)
+            for d in dropped:
+                logger.info(
+                    f"做T信号过滤 {d['symbol']} {d.get('signal_type')}: "
+                    f"{d.get('_drop_reason')}"
+                )
+
         risk_candidates = [item for item in candidates if item.get("__bypass_confirm__")]
         normal_candidates = [item for item in candidates if not item.get("__bypass_confirm__")]
         confirmed = self.confirmer.filter(normal_candidates)
@@ -341,6 +398,7 @@ class TMonitorRunner:
             f"- 已推送：{self.signal_count}",
             f"- TTL 跳过：{self.skipped_count}",
             f"- 趋势过滤：{self.filtered_count}",
+            f"- 持仓/已交易过滤：{self.holdings_skipped_count}",
             f"- 待确认：{self.confirmer.pending_count}",
             f"- 确认门槛：{self.confirmer.confirm_bars} 根 + {self.confirmer.candidate_ttl_minutes} 分钟内",
             "- 说明：候选需连续命中才升级；STOP_LOSS 例外立即推送",
