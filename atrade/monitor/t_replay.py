@@ -105,6 +105,93 @@ def compute_round_trips(
     return round_trips
 
 
+def compute_execution_stats(
+    trades: list[dict],
+    date: Optional[str] = None,
+) -> dict:
+    """按个股聚合"当日信号执行"统计（不要求闭环）。
+
+    用途：当 compute_round_trips 因缺 BUY 返回空时，仍可向用户展示：
+      - 该股今天 T 信号触发了多少次
+      - 实际执行了多少（shares > 0）
+      - 跳过了多少次（持仓不足 / 今日已交易）
+      - 当前持仓（最后一次 holding_qty_after）
+
+    返回:
+        {
+            "by_symbol": {
+                "<symbol>": {
+                    "name": "中天科技",
+                    "trades_count": 16,
+                    "executed_count": 1,
+                    "skipped_count": 15,
+                    "last_holding_qty_after": 100,
+                    "directions": {"SELL": 16, "BUY": 0},
+                    "signals": ["放量拉升", "T仓锁利"],
+                },
+                ...
+            },
+            "total_trades": int,
+            "total_executed": int,
+            "total_skipped": int,
+        }
+    """
+    trade_date = date or datetime.now().strftime("%Y-%m-%d")
+    by_symbol: dict[str, dict] = {}
+    total_trades = 0
+    total_executed = 0
+    total_skipped = 0
+
+    for trade in trades:
+        timestamp = _parse_timestamp(trade.get("timestamp"))
+        if timestamp is None or timestamp.strftime("%Y-%m-%d") != trade_date:
+            continue
+        symbol = str(trade.get("symbol", "")).zfill(6)
+        if not symbol or len(symbol) != 6:
+            continue
+        direction = str(trade.get("direction", "")).upper()
+        if direction not in {"BUY", "SELL", "STOP_LOSS"}:
+            continue
+        shares = _positive_int(trade.get("shares"))
+        skipped_reason = str(trade.get("skipped_reason", "")).strip()
+        signal_name = str(trade.get("signal_name", "")).strip()
+        name = str(trade.get("name", "")).strip()
+        holding_after = trade.get("holding_qty_after")
+
+        bucket = by_symbol.setdefault(symbol, {
+            "name": name,
+            "trades_count": 0,
+            "executed_count": 0,
+            "skipped_count": 0,
+            "last_holding_qty_after": holding_after if holding_after is not None else 0,
+            "directions": {},
+            "signals": [],
+            "last_timestamp": "",
+        })
+        bucket["trades_count"] += 1
+        total_trades += 1
+        bucket["directions"][direction] = bucket["directions"].get(direction, 0) + 1
+        if signal_name and signal_name not in bucket["signals"]:
+            bucket["signals"].append(signal_name)
+        if shares > 0:
+            bucket["executed_count"] += 1
+            total_executed += 1
+            bucket["last_holding_qty_after"] = int(holding_after) if holding_after is not None else bucket["last_holding_qty_after"]
+        elif skipped_reason:
+            bucket["skipped_count"] += 1
+            total_skipped += 1
+        ts_str = timestamp.isoformat(timespec="seconds")
+        if ts_str > bucket["last_timestamp"]:
+            bucket["last_timestamp"] = ts_str
+
+    return {
+        "by_symbol": dict(sorted(by_symbol.items())),
+        "total_trades": total_trades,
+        "total_executed": total_executed,
+        "total_skipped": total_skipped,
+    }
+
+
 def compute_stats(trips: list[RoundTrip]) -> dict:
     """计算总胜率、盈亏比及按股票/入场因子分组统计。"""
     overall = _summarize(trips)

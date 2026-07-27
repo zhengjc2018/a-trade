@@ -177,3 +177,73 @@ def test_empty_stats_are_zeroed():
     assert stats["win_rate"] == 0.0
     assert stats["total_pnl"] == 0.0
     assert stats["by_symbol"] == {}
+
+
+def test_compute_execution_stats_aggregates_per_symbol():
+    """按个股聚合触发/执行/跳过/当前持仓。"""
+    from atrade.monitor.t_replay import compute_execution_stats
+
+    trades = [
+        # 600522: 1 执行 + 2 跳过 + 1 STOP_LOSS 执行
+        _trade("SELL", 63.5, "10:00", date="2026-07-27", symbol="600522",
+               name="中天科技", shares=100),
+        _trade("SELL", 63.6, "10:30", date="2026-07-27", symbol="600522",
+               shares=0, skipped_reason="今日已执行过 SELL"),
+        _trade("SELL", 63.7, "11:00", date="2026-07-27", symbol="600522",
+               shares=0, skipped_reason="今日已执行过 SELL"),
+        _trade("STOP_LOSS", 60.0, "14:00", date="2026-07-27", symbol="600522",
+               shares=100),
+        # 002436: 1 BUY（仅记账）+ 1 SELL
+        _trade("BUY", 41.0, "11:30", date="2026-07-27", symbol="002436",
+               name="兴森科技", shares=100),
+        _trade("SELL", 41.5, "13:00", date="2026-07-27", symbol="002436",
+               shares=100),
+    ]
+
+    stats = compute_execution_stats(trades, "2026-07-27")
+
+    assert stats["total_trades"] == 6
+    assert stats["total_executed"] == 4
+    assert stats["total_skipped"] == 2
+
+    # 600522
+    sym_a = stats["by_symbol"]["600522"]
+    assert sym_a["name"] == "中天科技"
+    assert sym_a["trades_count"] == 4
+    assert sym_a["executed_count"] == 2
+    assert sym_a["skipped_count"] == 2
+    assert sym_a["directions"]["SELL"] == 3
+    assert sym_a["directions"]["STOP_LOSS"] == 1
+
+    # 002436
+    sym_b = stats["by_symbol"]["002436"]
+    assert sym_b["name"] == "兴森科技"
+    assert sym_b["trades_count"] == 2
+    assert sym_b["executed_count"] == 2
+    assert sym_b["skipped_count"] == 0
+    assert sym_b["directions"]["BUY"] == 1
+    assert sym_b["directions"]["SELL"] == 1
+
+
+def test_compute_execution_stats_filters_other_dates():
+    """非当日 trade 应被过滤。"""
+    from atrade.monitor.t_replay import compute_execution_stats
+
+    trades = [
+        _trade("SELL", 63.0, "10:00", date="2026-07-25"),
+        _trade("SELL", 63.5, "10:00", date="2026-07-27"),
+    ]
+    stats = compute_execution_stats(trades, "2026-07-27")
+    assert stats["total_trades"] == 1
+    assert "600522" in stats["by_symbol"]
+
+
+def test_compute_execution_stats_empty_for_no_trades():
+    """无 trade 时返回空聚合。"""
+    from atrade.monitor.t_replay import compute_execution_stats
+
+    stats = compute_execution_stats([], "2026-07-27")
+    assert stats["total_trades"] == 0
+    assert stats["total_executed"] == 0
+    assert stats["total_skipped"] == 0
+    assert stats["by_symbol"] == {}

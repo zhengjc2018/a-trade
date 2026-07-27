@@ -114,3 +114,55 @@ def test_closing_report_embeds_replay_before_other_sections(monkeypatch):
 
     assert report.index("## 📈 做T复盘") < report.index("## 💼 持仓概览")
     assert "✅ 今日做T：1胜0负" in report
+
+
+def test_t_replay_renders_per_symbol_even_without_round_trips(monkeypatch):
+    """即使无闭环，也应展示按个股信号执行汇总（用户感知"今天发生了什么"）。"""
+    # 只 SELL 没有 BUY → 无 round trip，但应有 per-symbol section
+    only_sells = [
+        {
+            "timestamp": "2026-07-25T10:00:00",
+            "symbol": "600522", "name": "中天科技",
+            "direction": "SELL", "shares": 100, "lots": 1.0,
+            "price": 63.5, "signal_name": "放量拉升",
+            "reason": "test", "holding_qty_after": 100,
+            "skipped_reason": "", "factor_hits": ["放量拉升"],
+            "risk_action": "",
+        },
+        {
+            "timestamp": "2026-07-25T10:30:00",
+            "symbol": "600522", "name": "中天科技",
+            "direction": "SELL", "shares": 0, "lots": 0,
+            "price": 63.7, "signal_name": "放量拉升",
+            "reason": "test", "holding_qty_after": 100,
+            "skipped_reason": "今日已执行过 SELL", "factor_hits": [],
+            "risk_action": "",
+        },
+    ]
+    monkeypatch.setattr("atrade.report.generator.load_trades", lambda: only_sells)
+    generator = ReportGenerator()
+
+    report = generator.generate_t_replay_report("2026-07-25")
+
+    # 即便没有 round trip，仍要展示执行汇总
+    assert "## 🔍 信号执行汇总（按个股）" in report
+    assert "中天科技(600522)" in report
+    assert "信号触发：2 次" in report
+    assert "实际执行：1 次" in report
+    assert "跳过（已拦截）：1 次" in report
+    # 解释跳过原因
+    assert "已自动拦截重复卖出" in report
+
+
+def test_t_replay_renders_per_symbol_with_round_trips(monkeypatch):
+    """有闭环时，闭环收益 + 按个股执行汇总都应展示。"""
+    monkeypatch.setattr("atrade.report.generator.load_trades", _replay_trades)
+    generator = ReportGenerator()
+
+    report = generator.generate_t_replay_report("2026-07-25")
+
+    assert "## 🔍 信号执行汇总（按个股）" in report
+    assert "中天科技(600522)" in report
+    # 闭环与执行汇总同时存在
+    assert "✅ 今日做T" in report
+    assert "1胜0负" in report

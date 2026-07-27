@@ -210,6 +210,17 @@ class DailyScheduler:
             misfire_grace_time=21600,
         )
 
+        # 做T复盘独立推送：每个交易日 15:36（与 closing_report 错开 1 分钟）
+        # 即使 closing_report 推送失败，replay 仍可达
+        self.scheduler.add_job(
+            self._job_t_replay,
+            CronTrigger(hour=15, minute=36),
+            id="t_replay",
+            name="做T复盘独立推送",
+            coalesce=True,
+            misfire_grace_time=21600,
+        )
+
         # 持仓新闻汇总：每个交易日 17:00
         self.scheduler.add_job(
             self._job_holdings_news,
@@ -288,6 +299,7 @@ class DailyScheduler:
         "holdings_news",
         "t_status_morning",
         "t_status_closing",
+        "t_replay",
     })
 
     def _deliver(
@@ -357,6 +369,23 @@ class DailyScheduler:
         logger.info("⏰ 触发: 收盘日报")
         report = self.report_gen.generate_closing_report()
         return self._deliver("closing_report", "📊 a-trade 收盘日报", report)
+
+    def _job_t_replay(self):
+        """独立推送做 T 复盘（与收盘日报解耦，确保必达）。
+
+        推送时间 15:36（晚于 closing_report 1 分钟），便于：
+        1. 醒目 banner + @ 全体，用户在群里优先看到
+        2. 即使 closing_report 因内容过长被折叠，replay 仍单独可读
+        """
+        if not self.calendar.is_trade_day():
+            return
+        logger.info("⏰ 触发: 做T复盘独立推送")
+        today = datetime.now().strftime("%Y-%m-%d")
+        report = self.report_gen.generate_t_replay_report(today)
+        return self._deliver(
+            "t_replay", "📈 a-trade 做T复盘", report,
+            banner_subtitle="今日闭环收益 + 按个股信号执行汇总",
+        )
 
     def _job_holdings_news(self):
         if not self.calendar.is_trade_day():
@@ -581,6 +610,7 @@ class DailyScheduler:
             RecoveryTask("auction_analysis", time(9, 25), time(10, 0), self._job_auction_analysis),
             RecoveryTask("noon_report", time(12, 30), time(14, 0), self._job_noon_report),
             RecoveryTask("closing_report", time(15, 35), time(23, 59), self._job_closing_report),
+            RecoveryTask("t_replay", time(15, 36), time(23, 59), self._job_t_replay),
             RecoveryTask("holdings_news", time(17, 0), time(23, 59), self._job_holdings_news),
         ]
         return recover_missed_tasks(
