@@ -299,7 +299,6 @@ class DailyScheduler:
         "holdings_news",
         "t_status_morning",
         "t_status_closing",
-        "t_replay",
     })
 
     def _deliver(
