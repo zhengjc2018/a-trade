@@ -18,6 +18,9 @@ from atrade.monitor.t_replay import (
 )
 from atrade.news.collector import NewsCollector
 
+# t_replay 报告"无任何信号触发"的专用 sentinel（scheduler 据此跳过推送）
+T_REPLAY_EMPTY_MARKER = "⏸️ 今日无任何 T 信号触发"
+
 
 class ReportGenerator:
     """生成不同时间段的报告。"""
@@ -91,10 +94,14 @@ class ReportGenerator:
         return "\n".join(lines)
 
     def generate_t_replay_report(self, date: str | None = None) -> str:
-        """生成当天做 T 复盘：闭环收益 + 按个股信号执行汇总。
+        """生成当天做 T 复盘：摘要 + 按个股信号执行汇总 + 闭环收益。
 
-        始终输出按个股执行汇总（即使闭环为空），让用户感知到
-        "今天哪些股触发了多少信号、实际执行了多少、被拦截了多少"。
+        输出顺序（保证首屏一眼看到今天做了什么）：
+            1. 🎯 今日摘要（净买入/净卖出股数）
+            2. 🔍 按个股信号执行汇总（始终输出，钉钉原生 markdown 不渲染表格 → 项目列表）
+            3. 📈 闭环收益（仅当 BUY→SELL/STOP_LOSS 有配对时）
+
+        返回空字符串 = 今天完全无任何信号触发，调用方应跳过推送（避免噪声）。
         """
         trade_date = date or datetime.now().strftime("%Y-%m-%d")
         all_trades = load_trades()
@@ -102,32 +109,108 @@ class ReportGenerator:
         stats = compute_stats(trips)
         execution = compute_execution_stats(all_trades, trade_date)
 
+        # 触发=0 → 返回简洁 marker（让 closing_report 嵌入有内容，scheduler 据此跳过独立推送）
+        if execution["total_trades"] <= 0 and not trips:
+            return "# 📈 做T复盘\n\n⏸️ 今日无任何 T 信号触发（无需总结）"
+
+        # 净买入/净卖出股数（仅计实际执行的交易）
+        net_shares = 0
+        net_buy_shares = 0
+        net_sell_shares = 0
+        for symbol, _info in execution["by_symbol"].items():
+            buy_shares = 0
+            sell_shares = 0
+            for trade in all_trades:
+                ts = trade.get("timestamp", "")
+                if not ts.startswith(trade_date):
+                    continue
+                if str(trade.get("symbol", "")).zfill(6) != symbol:
+                    continue
+                direction = str(trade.get("direction", "")).upper()
+                if trade.get("skipped_reason") or int(trade.get("shares", 0) or 0) <= 0:
+                    continue
+                if direction == "BUY":
+                    buy_shares += int(trade.get("shares", 0))
+                elif direction in {"SELL", "STOP_LOSS"}:
+                    sell_shares += int(trade.get("shares", 0))
+            net_buy_shares += buy_shares
+            net_sell_shares += sell_shares
+            net_shares += buy_shares - sell_shares
+
         lines = ["# 📈 做T复盘", ""]
-        # --- A. 闭环收益 ---
+        # --- A. 今日摘要（首屏一眼看完）---
+        summary_parts = [f"触发 **{execution['total_trades']}** 次"]
+        summary_parts.append(f"执行 **{execution['total_executed']}** 次")
+        if execution["total_skipped"] > 0:
+            summary_parts.append(f"拦截 **{execution['total_skipped']}** 次")
         if trips:
             result = f"{stats['wins']}胜{stats['losses']}负"
             if stats["breakevens"]:
                 result += f"{stats['breakevens']}平"
+            summary_parts.append(
+                f"闭环 **{stats['count']}** 笔"
+                f"，毛收益 **{stats['total_pnl']:+.2f} 元**"
+            )
+        lines.append("🎯 今日摘要：" + " ｜ ".join(summary_parts))
+        if net_buy_shares or net_sell_shares:
+            parts = []
+            if net_buy_shares:
+                parts.append(f"买入 **{net_buy_shares}** 股")
+            if net_sell_shares:
+                parts.append(f"卖出 **{net_sell_shares}** 股")
+            lines.append("- 净操作：" + " ｜ ".join(parts))
+        lines.append("")
+
+        # --- B. 按个股信号执行汇总（始终输出，项目列表格式）---
+        lines.append("## 🔍 按个股信号执行汇总")
+        for symbol, info in execution["by_symbol"].items():
+            display_name = info["name"] or symbol
+            direction_text = " / ".join(
+                f"{d}×{n}" for d, n in sorted(info["directions"].items())
+            )
+            holding_text = f"持仓 {info['last_holding_qty_after']} 股"
             lines.append(
-                f"✅ 今日做T：{result}，胜率 **{stats['win_rate']:.1%}**，"
-                f"毛收益 **{stats['total_pnl']:+.2f} 元**"
+                f"- **{display_name}({symbol})**："
+                f"触发 {info['trades_count']} 次，"
+                f"执行 {info['executed_count']} 次，"
+                f"拦截 {info['skipped_count']} 次 ｜ "
+                f"方向 {direction_text} ｜ {holding_text}"
+            )
+        if execution["total_skipped"] > 0:
+            lines.append(
+                "- 💡 拦截多为『持仓不足 / 今日已执行过 SELL』"
+                "——系统已自动避免重复卖出。"
+            )
+        lines.append("")
+
+        # --- C. 闭环收益（仅当有 BUY→SELL/STOP_LOSS 配对时）---
+        if trips:
+            result = f"{stats['wins']}胜{stats['losses']}负"
+            if stats["breakevens"]:
+                result += f"{stats['breakevens']}平"
+            lines.append("## 📈 闭环收益")
+            lines.append(
+                f"- 胜率 **{stats['win_rate']:.1%}** ｜ "
+                f"毛收益 **{stats['total_pnl']:+.2f} 元** ｜ "
+                f"{result}"
             )
             profit_factor = stats["profit_factor"]
             profit_factor_text = "∞" if profit_factor is None else f"{profit_factor:.2f}"
-            lines.extend([
-                "",
-                f"- 闭环：{stats['count']} 笔｜平均收益：{stats['avg_pnl_pct']:+.2%}｜盈亏比：{profit_factor_text}",
-                "- 口径：按实际记录股数计算毛收益，未扣手续费和滑点。",
-                "",
-                "| 股票 | 买入→卖出 | 股数 | 收益 | 持有 | 因子 |",
-                "|---|---:|---:|---:|---:|---|",
-            ])
+            lines.append(
+                f"- 闭环：{stats['count']} 笔 ｜ "
+                f"平均收益：{stats['avg_pnl_pct']:+.2%} ｜ "
+                f"盈亏比：{profit_factor_text}"
+            )
+            lines.append("- 口径：按实际记录股数计算毛收益，未扣手续费和滑点。")
+            lines.append("")
             for trip in trips[-5:]:
                 display_name = trip.name or trip.symbol
                 lines.append(
-                    f"| {display_name}({trip.symbol}) | {trip.entry_price:.2f}→{trip.exit_price:.2f} | "
-                    f"{trip.shares} | {trip.pnl:+.2f}元 ({trip.pnl_pct:+.2%}) | "
-                    f"{trip.holding_minutes}分钟 | {trip.entry_factor} |"
+                    f"- {display_name}({trip.symbol}) "
+                    f"{trip.entry_price:.2f} → {trip.exit_price:.2f}，"
+                    f"{trip.shares} 股，"
+                    f"**{trip.pnl:+.2f} 元** ({trip.pnl_pct:+.2%})，"
+                    f"持有 {trip.holding_minutes} 分钟"
                 )
             if stats["by_factor"]:
                 factor_parts = [
@@ -137,41 +220,10 @@ class ReportGenerator:
                         key=lambda item: (-item[1]["count"], item[0]),
                     )[:3]
                 ]
-                lines.extend(["", "- 因子表现：" + "；".join(factor_parts)])
+                lines.append("- 因子表现：" + "；".join(factor_parts))
         else:
-            lines.extend([
-                "⏸️ 今日无已闭环 T 交易（BUY→SELL/STOP_LOSS 配对为空）",
-                "- 系统仅记录了 SELL 信号触发，未匹配到对应的 BUY → 暂无法计入胜率。",
-            ])
-
-        # --- B. 按个股信号执行汇总（始终输出）---
-        if execution["total_trades"] > 0:
-            lines.extend([
-                "",
-                "## 🔍 信号执行汇总（按个股）",
-                "",
-                f"- 信号触发：{execution['total_trades']} 次｜"
-                f"实际执行：{execution['total_executed']} 次｜"
-                f"跳过（已拦截）：{execution['total_skipped']} 次",
-                "",
-                "| 个股 | 信号触发 | 实际执行 | 跳过 | 方向 | 当前持仓 |",
-                "|---|---:|---:|---:|---|---:|",
-            ])
-            for symbol, info in execution["by_symbol"].items():
-                display_name = info["name"] or symbol
-                direction_text = " / ".join(
-                    f"{d}{n}" for d, n in sorted(info["directions"].items())
-                )
-                lines.append(
-                    f"| {display_name}({symbol}) | {info['trades_count']} | "
-                    f"{info['executed_count']} | {info['skipped_count']} | "
-                    f"{direction_text} | {info['last_holding_qty_after']} 股 |"
-                )
-            if execution["total_skipped"] > 0:
-                lines.extend([
-                    "",
-                    "- 💡 跳过原因多为『持仓不足 / 今日已执行过 SELL』——系统已自动拦截重复卖出。",
-                ])
+            lines.append("## 📈 闭环收益")
+            lines.append("- ⏸️ 今日无已闭环 T 交易（BUY→SELL/STOP_LOSS 配对为空）")
         return "\n".join(lines)
 
     def generate_morning_brief(self) -> str:

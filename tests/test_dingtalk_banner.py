@@ -37,10 +37,19 @@ def test_banner_task_name_to_emoji_mapping():
         "morning_brief", "auction_analysis", "noon_report",
         "closing_report", "holdings_news", "delivery_heartbeat",
         "t_monitor", "t_status_morning", "t_status_closing",
+        "t_replay",
         "screen_monitor", "backtest",
     ]:
         b = render_banner(task)
         assert b.startswith("#"), f"banner {task} missing # heading"
+
+
+def test_banner_t_replay_uses_dedicated_title():
+    """t_replay 必须用专属 banner 标题，不能回退到通用 default。"""
+    md = render_banner("t_replay", "触发 1 次｜执行 1 次")
+    assert "a-trade 今日做T总结" in md
+    assert "触发 1 次｜执行 1 次" in md
+    assert "a-trade t_replay" not in md  # 不应回退到默认 task_name 兜底
 
 
 def test_render_for_dingtalk_handles_two_col_table():

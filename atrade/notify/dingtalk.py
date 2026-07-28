@@ -185,6 +185,7 @@ _BANNERS: dict[str, tuple[str, str]] = {
     "t_monitor":        ("📊", "a-trade 做T信号"),
     "t_status_morning": ("📈", "a-trade 上午做T汇总"),
     "t_status_closing": ("📉", "a-trade 收盘做T汇总"),
+    "t_replay":         ("📊", "a-trade 今日做T总结"),
     "screen_monitor":   ("🔍", "a-trade 盘中选股"),
     "backtest":         ("🧪", "a-trade 回测报告"),
 }

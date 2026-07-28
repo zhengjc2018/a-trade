@@ -221,11 +221,11 @@ class DailyScheduler:
             misfire_grace_time=21600,
         )
 
-        # 做T复盘独立推送：每个交易日 15:36（与 closing_report 错开 1 分钟）
-        # 即使 closing_report 推送失败，replay 仍可达
+        # 做T复盘独立推送：每个交易日 15:40（晚于 closing_report 5 分钟）
+        # closing_report 先到消化，T 复盘后到作为补刀，避免被长内容挤掉
         self.scheduler.add_job(
             self._job_t_replay,
-            CronTrigger(hour=15, minute=36),
+            CronTrigger(hour=15, minute=40),
             id="t_replay",
             name="做T复盘独立推送",
             coalesce=True,
@@ -384,19 +384,35 @@ class DailyScheduler:
     def _job_t_replay(self):
         """独立推送做 T 复盘（与收盘日报解耦，确保必达）。
 
-        推送时间 15:36（晚于 closing_report 1 分钟），便于：
-        1. 醒目 banner + @ 全体，用户在群里优先看到
-        2. 即使 closing_report 因内容过长被折叠，replay 仍单独可读
+        推送时间 15:40（晚于 closing_report 5 分钟），便于：
+        1. 收盘日报先到、T 复盘后到，避免被 closing 长内容挤掉
+        2. 信号=0 时静默早退，避免每天推一条"无事发生"
+        3. banner 副标题带触发/执行/拦截数字，一眼看到今日要点
         """
         if not self.calendar.is_trade_day():
             return
         logger.info("⏰ 触发: 做T复盘独立推送")
         today = datetime.now().strftime("%Y-%m-%d")
         report = self.report_gen.generate_t_replay_report(today)
+        from atrade.report.generator import T_REPLAY_EMPTY_MARKER
+        if T_REPLAY_EMPTY_MARKER in report:
+            logger.info("⏸️ 今日无任何 T 信号触发，跳过 t_replay 独立推送（closing_report 嵌入段已含）")
+            return
+        # banner 副标题从报告首段（摘要行）抽取，保证首屏醒目
+        subtitle = self._extract_t_replay_subtitle(report)
         return self._deliver(
-            "t_replay", "📈 a-trade 做T复盘", report,
-            banner_subtitle="今日闭环收益 + 按个股信号执行汇总",
+            "t_replay", "📊 a-trade 今日做T总结", report,
+            banner_subtitle=subtitle,
         )
+
+    @staticmethod
+    def _extract_t_replay_subtitle(report: str) -> str:
+        """从 generate_t_replay_report 输出中抽取摘要行作为 banner 副标题。"""
+        for line in report.splitlines():
+            line = line.strip()
+            if line.startswith("🎯 今日摘要："):
+                return line.replace("🎯 今日摘要：", "", 1).strip()
+        return "今日做T总结"
 
     def _job_holdings_news(self):
         if not self.calendar.is_trade_day():
@@ -644,7 +660,7 @@ class DailyScheduler:
             RecoveryTask("auction_analysis", time(9, 25), time(10, 0), self._job_auction_analysis),
             RecoveryTask("noon_report", time(12, 30), time(14, 0), self._job_noon_report),
             RecoveryTask("closing_report", time(15, 35), time(23, 59), self._job_closing_report),
-            RecoveryTask("t_replay", time(15, 36), time(23, 59), self._job_t_replay),
+            RecoveryTask("t_replay", time(15, 40), time(23, 59), self._job_t_replay),
             RecoveryTask("holdings_news", time(17, 0), time(23, 59), self._job_holdings_news),
         ]
         return recover_missed_tasks(

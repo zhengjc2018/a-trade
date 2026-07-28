@@ -84,25 +84,38 @@ def test_t_replay_report_puts_result_first(monkeypatch):
 
     report = generator.generate_t_replay_report("2026-07-25")
 
-    assert report.startswith("# 📈 做T复盘\n\n✅ 今日做T：1胜0负")
+    # 摘要行必须出现在首屏（紧跟标题）
+    assert report.startswith("# 📈 做T复盘\n\n🎯 今日摘要：")
+    assert "1胜0负" in report
     assert "胜率 **100.0%**" in report
     assert "中天科技(600522)" in report
     assert "+300.00" in report
     assert "未扣手续费" in report
+    # 闭环段必须放在按个股汇总之后
+    assert report.index("## 🔍 按个股信号执行汇总") < report.index("## 📈 闭环收益")
 
 
-def test_empty_replay_is_still_observable(monkeypatch):
+def test_empty_replay_returns_skip_marker(monkeypatch):
+    """完全无任何信号触发 → 返回 marker 字符串（closing_report 嵌入段有内容，
+    scheduler 据此跳过独立推送，避免每天推一条'无事发生'）。"""
     monkeypatch.setattr("atrade.report.generator.load_trades", lambda: [])
     generator = ReportGenerator()
 
     report = generator.generate_t_replay_report("2026-07-25")
 
-    assert report.startswith("# 📈 做T复盘\n\n⏸️ 今日无已闭环 T 交易")
+    from atrade.report.generator import T_REPLAY_EMPTY_MARKER
+    assert T_REPLAY_EMPTY_MARKER in report
 
 
 def test_closing_report_embeds_replay_before_other_sections(monkeypatch):
-    monkeypatch.setattr("atrade.report.generator.load_trades", _replay_trades)
+    """closing_report 嵌入做 T 复盘段，必须早于持仓概览等其他段。"""
+    expected_replay = (
+        "# 📈 做T复盘\n\n"
+        "✅ 今日做T：1胜0负，胜率 **100.0%**，毛收益 **+300.00 元**"
+    )
     generator = ReportGenerator()
+    # 直接 mock generate_t_replay_report，避开 datetime.now() 跨日过滤
+    monkeypatch.setattr(generator, "generate_t_replay_report", lambda d=None: expected_replay)
     monkeypatch.setattr(generator, "_render_holdings", lambda: "持仓")
     monkeypatch.setattr(generator, "_render_hot_sectors", lambda top_n=5: "板块")
     monkeypatch.setattr(generator, "_render_zt_pool", lambda: "涨停")
@@ -113,7 +126,8 @@ def test_closing_report_embeds_replay_before_other_sections(monkeypatch):
     report = generator.generate_closing_report()
 
     assert report.index("## 📈 做T复盘") < report.index("## 💼 持仓概览")
-    assert "✅ 今日做T：1胜0负" in report
+    assert "1胜0负" in report
+    assert "+300.00" in report
 
 
 def test_t_replay_renders_per_symbol_even_without_round_trips(monkeypatch):
@@ -144,14 +158,24 @@ def test_t_replay_renders_per_symbol_even_without_round_trips(monkeypatch):
 
     report = generator.generate_t_replay_report("2026-07-25")
 
-    # 即便没有 round trip，仍要展示执行汇总
-    assert "## 🔍 信号执行汇总（按个股）" in report
-    assert "中天科技(600522)" in report
-    assert "信号触发：2 次" in report
-    assert "实际执行：1 次" in report
-    assert "跳过（已拦截）：1 次" in report
-    # 解释跳过原因
-    assert "已自动拦截重复卖出" in report
+    # 摘要行：触发/执行/拦截都展示
+    assert "🎯 今日摘要：" in report
+    assert "触发 **2** 次" in report
+    assert "执行 **1** 次" in report
+    assert "拦截 **1** 次" in report
+    # 按个股项目列表（不再用 markdown 表格）
+    assert "## 🔍 按个股信号执行汇总" in report
+    assert "- **中天科技(600522)**" in report
+    assert "触发 2 次" in report
+    assert "执行 1 次" in report
+    assert "拦截 1 次" in report
+    # 不应再有 markdown 表格分隔符
+    assert "|---|" not in report
+    # 闭环段即使为空也要保留（说明原因）
+    assert "## 📈 闭环收益" in report
+    assert "⏸️ 今日无已闭环 T 交易" in report
+    # 解释拦截原因
+    assert "已自动避免重复卖出" in report
 
 
 def test_t_replay_renders_per_symbol_with_round_trips(monkeypatch):
@@ -161,8 +185,30 @@ def test_t_replay_renders_per_symbol_with_round_trips(monkeypatch):
 
     report = generator.generate_t_replay_report("2026-07-25")
 
-    assert "## 🔍 信号执行汇总（按个股）" in report
+    # 摘要行体现闭环
+    assert "🎯 今日摘要：" in report
+    assert "闭环 **1** 笔" in report
+    assert "毛收益" in report
+    # 按个股项目列表
+    assert "## 🔍 按个股信号执行汇总" in report
     assert "中天科技(600522)" in report
-    # 闭环与执行汇总同时存在
-    assert "✅ 今日做T" in report
+    # 闭环段后置
+    assert "## 📈 闭环收益" in report
     assert "1胜0负" in report
+    # 顺序保证：按个股汇总 < 闭环段
+    assert report.index("## 🔍 按个股信号执行汇总") < report.index("## 📈 闭环收益")
+
+
+def test_t_replay_summary_first_line_for_banner(monkeypatch):
+    """_extract_t_replay_subtitle 必须从摘要行抽取，确保 banner 副标题带数字。"""
+    monkeypatch.setattr("atrade.report.generator.load_trades", _replay_trades)
+    generator = ReportGenerator()
+    from atrade.scheduler.runner import DailyScheduler
+
+    report = generator.generate_t_replay_report("2026-07-25")
+    subtitle = DailyScheduler._extract_t_replay_subtitle(report)
+
+    # 必须含触发/执行数字
+    assert "触发" in subtitle
+    assert "执行" in subtitle
+    assert "闭环" in subtitle
