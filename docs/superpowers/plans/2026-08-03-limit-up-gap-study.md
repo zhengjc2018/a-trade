@@ -297,7 +297,7 @@ def test_daily_industry_heat_counts_and_top3():
         {"date": "2026-07-31", "code": "600007", "industry": "半导体"},
     ])
     heat = daily_industry_heat(rows)
-    assert len(heat) == 4
+    assert len(heat) == 5
     top = heat[heat["date"] == "2026-07-30"]
     assert top.loc[top["industry"] == "白酒", "limit_count"].iloc[0] == 3
     assert bool(top.loc[top["industry"] == "白酒", "is_top3"].iloc[0])
