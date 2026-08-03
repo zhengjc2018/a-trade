@@ -527,7 +527,11 @@ def bucket_stats(
 ) -> list[BucketStat]:
     labels = _bucket_label(df[column])
     out: list[BucketStat] = []
-    for label, group in df.assign(_bucket=labels).groupby("_bucket", sort=False):
+    for label, group in df.assign(_bucket=labels).groupby(
+        "_bucket",
+        sort=False,
+        observed=False,
+    ):
         stat = compute_base(group)
         if stat["n"] < min_samples:
             continue
@@ -549,6 +553,7 @@ def rank_factors(
 ) -> list[dict]:
     base = compute_base(df)
     ranking: list[dict] = []
+    used_buckets: set[str] = set()
     for column in factor_columns:
         if column not in df.columns:
             continue
@@ -556,13 +561,19 @@ def rank_factors(
         if not buckets:
             continue
         best = max(buckets, key=lambda b: b.win_rate)
+        tied_best = [b for b in buckets if b.win_rate == best.win_rate]
+        selected = next(
+            (b for b in tied_best if b.bucket not in used_buckets),
+            best,
+        )
+        used_buckets.add(selected.bucket)
         ranking.append({
             "column": column,
-            "best_bucket": best.bucket,
-            "n": best.n,
-            "win_rate": best.win_rate,
-            "mean_gap": best.mean_gap,
-            "lift": best.win_rate - base["win_rate"],
+            "best_bucket": selected.bucket,
+            "n": selected.n,
+            "win_rate": selected.win_rate,
+            "mean_gap": selected.mean_gap,
+            "lift": selected.win_rate - base["win_rate"],
         })
     return sorted(ranking, key=lambda r: r["lift"], reverse=True)
 
