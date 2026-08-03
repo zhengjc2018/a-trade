@@ -14,5 +14,5 @@
 - [x] 呈现设计并获得用户确认
 - [x] 写入 design doc
 - [x] 规格自检
-- [ ] 用户审阅规格
-- [ ] 进入 writing-plans
+- [x] 用户审阅规格
+- [x] 进入 writing-plans
