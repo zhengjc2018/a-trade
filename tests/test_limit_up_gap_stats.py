@@ -47,3 +47,11 @@ def test_rank_and_score_and_top():
     top = top_vs_all(df, score, top_pct=0.5, min_samples=2)
     assert top["n"] == 4
     assert top["win_rate"] > 0.625
+
+
+def test_top_vs_all_requires_top_n_to_reach_min_samples():
+    df = _samples().head(4)
+    score = pd.Series([0, 0, 0, 0], index=df.index)
+    top = top_vs_all(df, score, top_pct=0.5, min_samples=3)
+    assert top["n"] == 0
+    assert top["win_rate"] == 0.0

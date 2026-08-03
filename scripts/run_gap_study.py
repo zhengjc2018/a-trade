@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 import akshare as ak
 
 from atrade.data import HistoryProvider
+from atrade.monitor import TradingCalendar
 from atrade.research.limit_up_gap import ztpool
 from atrade.research.limit_up_gap.industry import industry_of
 from atrade.research.limit_up_gap.report import render_report
@@ -78,7 +79,14 @@ def main() -> None:
         with_zt_pool=args.with_zt_pool,
     )
     zt_enrich = ztpool.enrich_samples if args.with_zt_pool else None
-    result = run_study(codes, HistoryProvider(), industry_of, config, zt_enrich=zt_enrich)
+    result = run_study(
+        codes,
+        HistoryProvider(),
+        industry_of,
+        config,
+        zt_enrich=zt_enrich,
+        is_trade_day=TradingCalendar().is_trade_day,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(render_report(result), encoding="utf-8")
     print(f"报告已写入: {args.out}")

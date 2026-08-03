@@ -61,10 +61,11 @@ def collect_samples(
     hp,
     industry_fn: Callable[[str], str],
     config: StudyConfig,
+    is_trade_day: Optional[Callable[[str], bool]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     limit_rows: list[pd.DataFrame] = []
     sample_rows: list[pd.DataFrame] = []
-    excluded = {"yiziban": 0, "no_next_open": 0, "first_board": 0}
+    excluded = {"yiziban": 0, "no_next_open": 0, "first_board": 0, "lianban": 0}
     selected = codes[: config.max_symbols] if config.max_symbols > 0 else codes
     for code in selected:
         df = hp.fetch_with_cache(
@@ -75,7 +76,11 @@ def collect_samples(
         )
         if df is None or len(df) < config.min_bars:
             continue
-        df = add_limit_labels(df, min_gap_pct=config.min_gap_pct)
+        df = add_limit_labels(
+            df,
+            min_gap_pct=config.min_gap_pct,
+            is_trade_day=is_trade_day,
+        )
         df = add_features(df)
         industry = industry_fn(code) or "未知行业"
 
@@ -92,6 +97,9 @@ def collect_samples(
             (df["is_first_board"] & ~df["next_open_exists"]).sum()
         )
         excluded["first_board"] += int(df["is_first_board"].sum())
+        excluded["lianban"] += int(
+            (df["is_limit_up"] & (df["limit_streak"] >= 2)).sum()
+        )
         if not first.empty:
             first["code"] = code
             first["industry"] = industry
@@ -118,11 +126,26 @@ def run_study(
     industry_fn: Callable[[str], str],
     config: StudyConfig,
     zt_enrich: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+    is_trade_day: Optional[Callable[[str], bool]] = None,
 ) -> GapStudyResult:
-    samples, excluded = collect_samples(codes, hp, industry_fn, config)
+    samples, excluded = collect_samples(
+        codes,
+        hp,
+        industry_fn,
+        config,
+        is_trade_day=is_trade_day,
+    )
     if config.with_zt_pool and zt_enrich is not None:
         samples = zt_enrich(samples)
-    factor_cols = [c for c in FACTOR_COLUMNS if c in samples.columns]
+    available_zt = [
+        c
+        for c in ZT_FACTOR_COLUMNS
+        if c in samples.columns
+        and int(samples[c].notna().sum()) >= config.min_samples
+    ]
+    factor_cols = BASE_FACTOR_COLUMNS + INDUSTRY_FACTOR_COLUMNS + available_zt
+    if samples.empty:
+        factor_cols = []
     if factor_cols:
         samples = samples.dropna(subset=factor_cols).reset_index(drop=True)
     base = compute_base(samples)
@@ -144,4 +167,6 @@ def run_study(
         ranking=ranking,
         top=top,
         excluded=excluded,
+        top_pct=config.top_pct,
+        min_gap_pct=config.min_gap_pct,
     )

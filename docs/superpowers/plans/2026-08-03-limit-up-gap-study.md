@@ -32,7 +32,7 @@
 - Test: `tests/test_limit_up_gap_labels.py`
 
 **Interfaces:**
-- Produces: `add_limit_labels(df: pd.DataFrame, min_gap_pct: float = 1.0) -> pd.DataFrame`
+- Produces: `add_limit_labels(df: pd.DataFrame, min_gap_pct: float = 1.0, is_trade_day: Optional[Callable[[str], bool]] = None) -> pd.DataFrame`
   - 输入列：`open / high / low / close / volume`，按日期升序。
   - 输出新增列：`prev_close, is_limit_up, limit_streak, is_first_board, is_yiziban, next_open, next_open_exists, next_open_gap_pct, next_open_win`。
 
@@ -49,7 +49,7 @@ from atrade.research.limit_up_gap.labels import add_limit_labels
 
 
 def _df():
-    # 日期升序：T-1 普通、T 首板、T+1 高开、T+2 连板一字、T+3 普通
+    # 日期升序：T-1 普通、T 首板、T+1 高开、T+2 一字（非连板）、T+3 普通
     return pd.DataFrame([
         {"date": "2026-07-29", "open": 10.0, "high": 10.3, "low": 9.9, "close": 10.1, "volume": 100_000},
         {"date": "2026-07-30", "open": 10.2, "high": 11.2, "low": 10.1, "close": 11.2, "volume": 300_000},
@@ -105,6 +105,9 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'atrade.research'`
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import Callable, Optional
+
 import pandas as pd
 
 LIMIT_UP_PCT = 0.099
@@ -113,6 +116,7 @@ LIMIT_UP_PCT = 0.099
 def add_limit_labels(
     df: pd.DataFrame,
     min_gap_pct: float = 1.0,
+    is_trade_day: Optional[Callable[[str], bool]] = None,
 ) -> pd.DataFrame:
     """按日期升序输入日线，追加涨停与次日高开相关列。"""
     out = df.copy()
@@ -134,7 +138,27 @@ def add_limit_labels(
         & (out["high"] == out["low"])
         & (out["low"] == out["close"])
     )
-    out["next_open"] = out["open"].shift(-1)
+    if is_trade_day is None:
+        out["next_open"] = out["open"].shift(-1)
+    else:
+        date_strs = out["date"].astype(str).str[:10].tolist()
+        date_to_open = dict(zip(date_strs, out["open"].tolist()))
+        next_open_values: list[float] = []
+        for date_str in date_strs:
+            current = datetime.strptime(date_str, "%Y-%m-%d").date()
+            next_date: Optional[str] = None
+            for _ in range(10):
+                current += timedelta(days=1)
+                candidate = current.strftime("%Y-%m-%d")
+                if is_trade_day(candidate):
+                    next_date = candidate
+                    break
+            next_open_values.append(
+                date_to_open.get(next_date, float("nan"))
+                if next_date is not None
+                else float("nan")
+            )
+        out["next_open"] = next_open_values
     out["next_open_exists"] = out["next_open"].notna() & (out["next_open"] > 0)
     out["next_open_gap_pct"] = (out["next_open"] / out["close"] - 1) * 100
     out["next_open_win"] = (
@@ -610,6 +634,14 @@ def top_vs_all(
             "lift": 0.0,
         }
     top_n = max(1, int(round(n * top_pct)))
+    if top_n < min_samples:
+        return {
+            "top_pct": top_pct,
+            "n": 0,
+            "win_rate": 0.0,
+            "mean_gap": 0.0,
+            "lift": 0.0,
+        }
     top = df.assign(_score=score).nlargest(top_n, "_score")
     top_stat = compute_base(top)
     base_stat = compute_base(df)
@@ -647,9 +679,9 @@ git commit -m "feat(research): 分桶统计与多因子打分"
 - Consumes: `add_limit_labels`、`add_features`、`daily_industry_heat`、`merge_industry_heat`、`compute_base`、`bucket_stats`、`rank_factors`、`score_by_buckets`、`top_vs_all`。
 - Produces:
   - `StudyConfig(min_gap_pct=1.0, min_samples=30, top_pct=0.2, max_symbols=0, min_bars=80, lookback_bars=515, with_zt_pool=False)`。
-  - `collect_samples(codes, hp, industry_fn, config) -> (pd.DataFrame, dict)`。
-  - `run_study(codes, hp, industry_fn, config, zt_enrich=None) -> GapStudyResult`。
-  - `GapStudyResult(generated_at, base, factor_buckets, ranking, top, excluded)`。
+  - `collect_samples(codes, hp, industry_fn, config, is_trade_day=None) -> (pd.DataFrame, dict)`。
+  - `run_study(codes, hp, industry_fn, config, zt_enrich=None, is_trade_day=None) -> GapStudyResult`。
+  - `GapStudyResult(generated_at, base, top_pct=0.2, min_gap_pct=1.0, factor_buckets={}, ranking=[], top={}, excluded={})`。
   - `render_report(result) -> str`。
 
 - [ ] **Step 1: Write the failing test**
@@ -705,10 +737,12 @@ def test_render_report_handles_empty():
     result = GapStudyResult(
         generated_at="2026-08-03 15:00:00",
         base={"n": 0, "wins": 0, "win_rate": 0.0, "mean_gap": 0.0, "median_gap": 0.0},
+        top_pct=0.2,
+        min_gap_pct=1.0,
         factor_buckets={},
         ranking=[],
         top={"top_pct": 0.2, "n": 0, "win_rate": 0.0, "mean_gap": 0.0, "lift": 0.0},
-        excluded={"yiziban": 0, "no_next_open": 0, "first_board": 0},
+        excluded={"yiziban": 0, "no_next_open": 0, "first_board": 0, "lianban": 0},
     )
     md = render_report(result)
     assert "样本不足" in md
@@ -737,6 +771,8 @@ from .stats import BucketStat
 class GapStudyResult:
     generated_at: str
     base: dict
+    top_pct: float = 0.2
+    min_gap_pct: float = 1.0
     factor_buckets: dict[str, list[BucketStat]] = field(default_factory=dict)
     ranking: list[dict] = field(default_factory=list)
     top: dict = field(default_factory=dict)
@@ -754,6 +790,7 @@ def render_report(result: GapStudyResult) -> str:
         "",
         f"排除口径：一字板 {result.excluded.get('yiziban', 0)}、"
         f"无 T+1 数据 {result.excluded.get('no_next_open', 0)}、"
+        f"连板 {result.excluded.get('lianban', 0)}、"
         f"全部首板 {result.excluded.get('first_board', 0)}",
         "",
     ]
@@ -777,7 +814,7 @@ def render_report(result: GapStudyResult) -> str:
     top = result.top
     lines.extend([
         "",
-        "## 多因子 Top 20%",
+        f"## 多因子 Top {result.top_pct:.0%}",
         f"- Top {top['n']} 只：胜率 **{top['win_rate']:.1%}**，"
         f"平均高开 **{top['mean_gap']:.2f}%**，相对基线提升 **{top['lift']:+.1%}**",
         "",
@@ -794,7 +831,10 @@ def render_report(result: GapStudyResult) -> str:
             )
         lines.append("")
     lines.append("---")
-    lines.append("_口径：T 日收盘买入，T+1 开盘卖出，高开 ≥1% 算胜；一字板已排除。_")
+    lines.append(
+        f"_口径：T 日收盘买入，T+1 开盘卖出，"
+        f"高开 ≥{result.min_gap_pct:g}% 算胜；一字板已排除。_"
+    )
     return "\n".join(lines)
 ```
 
@@ -863,10 +903,11 @@ def collect_samples(
     hp,
     industry_fn: Callable[[str], str],
     config: StudyConfig,
+    is_trade_day: Optional[Callable[[str], bool]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     limit_rows: list[pd.DataFrame] = []
     sample_rows: list[pd.DataFrame] = []
-    excluded = {"yiziban": 0, "no_next_open": 0, "first_board": 0}
+    excluded = {"yiziban": 0, "no_next_open": 0, "first_board": 0, "lianban": 0}
     selected = codes[: config.max_symbols] if config.max_symbols > 0 else codes
     for code in selected:
         df = hp.fetch_with_cache(
@@ -877,7 +918,11 @@ def collect_samples(
         )
         if df is None or len(df) < config.min_bars:
             continue
-        df = add_limit_labels(df, min_gap_pct=config.min_gap_pct)
+        df = add_limit_labels(
+            df,
+            min_gap_pct=config.min_gap_pct,
+            is_trade_day=is_trade_day,
+        )
         df = add_features(df)
         industry = industry_fn(code) or "未知行业"
 
@@ -894,6 +939,9 @@ def collect_samples(
             (df["is_first_board"] & ~df["next_open_exists"]).sum()
         )
         excluded["first_board"] += int(df["is_first_board"].sum())
+        excluded["lianban"] += int(
+            (df["is_limit_up"] & (df["limit_streak"] >= 2)).sum()
+        )
         if not first.empty:
             first["code"] = code
             first["industry"] = industry
@@ -920,11 +968,26 @@ def run_study(
     industry_fn: Callable[[str], str],
     config: StudyConfig,
     zt_enrich: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
+    is_trade_day: Optional[Callable[[str], bool]] = None,
 ) -> GapStudyResult:
-    samples, excluded = collect_samples(codes, hp, industry_fn, config)
+    samples, excluded = collect_samples(
+        codes,
+        hp,
+        industry_fn,
+        config,
+        is_trade_day=is_trade_day,
+    )
     if config.with_zt_pool and zt_enrich is not None:
         samples = zt_enrich(samples)
-    factor_cols = [c for c in FACTOR_COLUMNS if c in samples.columns]
+    available_zt = [
+        c
+        for c in ZT_FACTOR_COLUMNS
+        if c in samples.columns
+        and int(samples[c].notna().sum()) >= config.min_samples
+    ]
+    factor_cols = BASE_FACTOR_COLUMNS + INDUSTRY_FACTOR_COLUMNS + available_zt
+    if samples.empty:
+        factor_cols = []
     if factor_cols:
         samples = samples.dropna(subset=factor_cols).reset_index(drop=True)
     base = compute_base(samples)
@@ -946,6 +1009,8 @@ def run_study(
         ranking=ranking,
         top=top,
         excluded=excluded,
+        top_pct=config.top_pct,
+        min_gap_pct=config.min_gap_pct,
     )
 ```
 
@@ -1222,6 +1287,7 @@ sys.path.insert(0, str(ROOT))
 import akshare as ak
 
 from atrade.data import HistoryProvider
+from atrade.monitor import TradingCalendar
 from atrade.research.limit_up_gap.industry import industry_of
 from atrade.research.limit_up_gap.report import render_report
 from atrade.research.limit_up_gap.study import StudyConfig, run_study
@@ -1281,7 +1347,14 @@ def main() -> None:
         with_zt_pool=args.with_zt_pool,
     )
     zt_enrich = ztpool.enrich_samples if args.with_zt_pool else None
-    result = run_study(codes, HistoryProvider(), industry_of, config, zt_enrich=zt_enrich)
+    result = run_study(
+        codes,
+        HistoryProvider(),
+        industry_of,
+        config,
+        zt_enrich=zt_enrich,
+        is_trade_day=TradingCalendar().is_trade_day,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(render_report(result), encoding="utf-8")
     print(f"报告已写入: {args.out}")

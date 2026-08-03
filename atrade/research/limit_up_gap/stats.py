@@ -133,6 +133,14 @@ def top_vs_all(
             "lift": 0.0,
         }
     top_n = max(1, int(round(n * top_pct)))
+    if top_n < min_samples:
+        return {
+            "top_pct": top_pct,
+            "n": 0,
+            "win_rate": 0.0,
+            "mean_gap": 0.0,
+            "lift": 0.0,
+        }
     top = df.assign(_score=score).nlargest(top_n, "_score")
     top_stat = compute_base(top)
     base_stat = compute_base(df)

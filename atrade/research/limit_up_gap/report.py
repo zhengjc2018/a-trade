@@ -11,6 +11,8 @@ from .stats import BucketStat
 class GapStudyResult:
     generated_at: str
     base: dict
+    top_pct: float = 0.2
+    min_gap_pct: float = 1.0
     factor_buckets: dict[str, list[BucketStat]] = field(default_factory=dict)
     ranking: list[dict] = field(default_factory=list)
     top: dict = field(default_factory=dict)
@@ -28,6 +30,7 @@ def render_report(result: GapStudyResult) -> str:
         "",
         f"排除口径：一字板 {result.excluded.get('yiziban', 0)}、"
         f"无 T+1 数据 {result.excluded.get('no_next_open', 0)}、"
+        f"连板 {result.excluded.get('lianban', 0)}、"
         f"全部首板 {result.excluded.get('first_board', 0)}",
         "",
     ]
@@ -51,7 +54,7 @@ def render_report(result: GapStudyResult) -> str:
     top = result.top
     lines.extend([
         "",
-        "## 多因子 Top 20%",
+        f"## 多因子 Top {result.top_pct:.0%}",
         f"- Top {top['n']} 只：胜率 **{top['win_rate']:.1%}**，"
         f"平均高开 **{top['mean_gap']:.2f}%**，相对基线提升 **{top['lift']:+.1%}**",
         "",
@@ -68,5 +71,8 @@ def render_report(result: GapStudyResult) -> str:
             )
         lines.append("")
     lines.append("---")
-    lines.append("_口径：T 日收盘买入，T+1 开盘卖出，高开 ≥1% 算胜；一字板已排除。_")
+    lines.append(
+        f"_口径：T 日收盘买入，T+1 开盘卖出，"
+        f"高开 ≥{result.min_gap_pct:g}% 算胜；一字板已排除。_"
+    )
     return "\n".join(lines)

@@ -8,7 +8,7 @@ from atrade.research.limit_up_gap.labels import add_limit_labels
 
 
 def _df():
-    # 日期升序：T-1 普通、T 首板、T+1 高开、T+2 连板一字、T+3 普通
+    # 日期升序：T-1 普通、T 首板、T+1 高开、T+2 一字（非连板）、T+3 普通
     return pd.DataFrame([
         {"date": "2026-07-29", "open": 10.0, "high": 10.3, "low": 9.9, "close": 10.1, "volume": 100_000},
         {"date": "2026-07-30", "open": 10.2, "high": 11.2, "low": 10.1, "close": 11.2, "volume": 300_000},
@@ -36,3 +36,21 @@ def test_min_gap_threshold():
     out = add_limit_labels(_df(), min_gap_pct=3.0)
     # gap 2.68% < 3%，不算胜
     assert not bool(out.loc[1, "next_open_win"])
+
+
+def test_limit_labels_uses_trade_day_calendar():
+    df = pd.DataFrame([
+        {"date": "2026-07-30", "open": 10.0, "high": 10.6, "low": 9.9, "close": 10.5},
+        {"date": "2026-08-03", "open": 10.8, "high": 11.0, "low": 10.6, "close": 10.7},
+    ])
+    trade_days = {"2026-07-30", "2026-08-03"}
+    out = add_limit_labels(
+        df,
+        is_trade_day=lambda day: day in trade_days,
+    )
+    assert out.loc[0, "next_open"] == 10.8
+    assert bool(out.loc[0, "next_open_exists"])
+    assert out.loc[0, "next_open_gap_pct"] == pytest.approx(2.8571, rel=1e-3)
+    assert bool(out.loc[0, "next_open_win"])
+    assert not bool(out.loc[1, "next_open_exists"])
+    assert pd.isna(out.loc[1, "next_open_gap_pct"])
