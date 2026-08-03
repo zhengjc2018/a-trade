@@ -16,3 +16,5 @@
 - [x] 规格自检
 - [x] 用户审阅规格
 - [x] 进入 writing-plans
+- [x] Subagent-Driven 执行实施计划
+- [x] 最终整体评审与修复
