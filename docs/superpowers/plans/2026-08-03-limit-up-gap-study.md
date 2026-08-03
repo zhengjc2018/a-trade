@@ -203,7 +203,7 @@ def test_add_features():
     assert 0.0 < last["body_ratio"] < 1.0
     assert last["pos_ma20"] > 0
     assert last["pos_ma60"] > 0
-    assert last["dist_high60"] >= 0
+    assert last["dist_high60"] < 0
     assert last["dist_low60"] >= 0
     assert last["amount_yi"] > 0
 ```
