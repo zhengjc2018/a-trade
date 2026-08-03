@@ -662,7 +662,6 @@ import numpy as np
 import pandas as pd
 
 from atrade.research.limit_up_gap.report import GapStudyResult, render_report
-from atrade.research.limit_up_gap.stats import BucketStat
 from atrade.research.limit_up_gap.study import StudyConfig, run_study
 
 
