@@ -33,9 +33,9 @@ from atrade.news.collector import NewsCollector
 from atrade.notify import DeliveryLedger, DeliveryRouter, DingTalkNotifier, OpenClawNotifier
 from atrade.notify.dingtalk import render_banner
 from atrade.report.generator import ReportGenerator
-from atrade.research.limit_up_gap.daily_candidates import (
-    build_daily_candidates,
-    render_daily_candidates,
+from atrade.research.limit_up_gap.next_day_candidates import (
+    build_next_day_candidates,
+    render_next_day_candidates,
     score_candidates,
 )
 from atrade.research.limit_up_gap.ztpool import fetch_zt_day
@@ -176,12 +176,12 @@ class DailyScheduler:
             misfire_grace_time=1800,
         )
 
-        # 首板高开候选：每个交易日 14:50（尾盘，收盘前推送）
+        # 明日高开候选：每个交易日 14:50（尾盘，收盘前推送）
         self.scheduler.add_job(
-            self._job_limit_up_gap_candidates,
+            self._job_next_day_gap_candidates,
             CronTrigger(hour=14, minute=50),
-            id="limit_up_gap_candidates",
-            name="首板高开候选",
+            id="next_day_gap_candidates",
+            name="明日高开候选",
             coalesce=True,
             misfire_grace_time=1800,
         )
@@ -347,7 +347,7 @@ class DailyScheduler:
         "t_status_morning",
         "t_status_closing",
         "screen_review",
-        "limit_up_gap_candidates",
+        "next_day_gap_candidates",
     })
 
     def _deliver(
@@ -475,33 +475,40 @@ class DailyScheduler:
         suffix = f":{datetime.now().strftime('%H%M')}"
         return self._deliver("auction_analysis", "📈 a-trade 竞价分析", report, suffix)
 
-    def _job_limit_up_gap_candidates(self):
-        """14:50 推送今日首板高开候选（尾盘买入，T+1 高开目标）。"""
+    def _job_next_day_gap_candidates(self):
+        """14:50 推送明日高开候选：今日未涨停，基本面合格，评分 Top 3。"""
         if not self.calendar.is_trade_day():
             return
-        logger.info("⏰ 触发: 首板高开候选")
+        logger.info("⏰ 触发: 明日高开候选")
         today = datetime.now().strftime("%Y-%m-%d")
+        from atrade.research.limit_up_gap.industry import industry_of
+        from scripts.screen import fetch_market_snapshot, load_snapshot
+
         zt_df = fetch_zt_day(today)
         if zt_df is None or zt_df.empty:
-            logger.info("今日无涨停池数据，跳过首板候选")
+            logger.info("今日无涨停池数据，跳过明日高开候选")
             return
-        codes = zt_df["代码"].astype(str).str.zfill(6).tolist()
-        quotes = self.quote_provider.batch(codes)
-        candidates = build_daily_candidates(
+        fetch_market_snapshot()
+        snapshot_df = load_snapshot()
+        if snapshot_df.empty:
+            logger.info("全市场快照为空，跳过明日高开候选")
+            return
+        candidates = build_next_day_candidates(
+            snapshot_df,
             zt_df,
             HistoryProvider(),
-            quotes,
+            industry_of,
             today,
         )
         if not candidates:
-            logger.info("今日无符合条件首板，跳过推送")
+            logger.info("今日无符合条件候选，跳过推送")
             return
         scored = score_candidates(candidates)
-        md = render_daily_candidates(scored)
+        md = render_next_day_candidates(scored, top_n=3)
         suffix = f":{datetime.now().strftime('%H%M')}"
         return self._deliver(
-            "limit_up_gap_candidates",
-            "🚀 a-trade 首板高开候选",
+            "next_day_gap_candidates",
+            "🚀 a-trade 明日高开候选",
             md,
             suffix,
         )

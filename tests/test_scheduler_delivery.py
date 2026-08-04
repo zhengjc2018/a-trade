@@ -130,10 +130,10 @@ def test_scheduler_registers_reset_and_closing_at_1535():
     assert "t_replay" in jobs  # 做T复盘独立推送（15:40）
     assert "pre_market_screen" in jobs  # 早盘选股 9:26
     assert "screen_review" in jobs  # 今日荐股胜率 15:00
-    assert "limit_up_gap_candidates" in jobs  # 首板高开候选 14:50
+    assert "next_day_gap_candidates" in jobs  # 明日高开候选 14:50
     assert "hour='9', minute='30'" in str(jobs["t_state_reset"].trigger)
     assert "hour='9', minute='26'" in str(jobs["pre_market_screen"].trigger)
-    assert "hour='14', minute='50'" in str(jobs["limit_up_gap_candidates"].trigger)
+    assert "hour='14', minute='50'" in str(jobs["next_day_gap_candidates"].trigger)
     assert "hour='15', minute='0'" in str(jobs["screen_review"].trigger)
     assert "hour='15', minute='35'" in str(jobs["closing_report"].trigger)
     assert "hour='15', minute='40'" in str(jobs["t_replay"].trigger)
@@ -173,18 +173,12 @@ def test_screen_review_skips_when_no_picks():
     scheduler.delivery_router.send.assert_not_called()
 
 
-def test_limit_up_gap_candidates_push(monkeypatch):
+def test_next_day_gap_candidates_push(monkeypatch):
     import pandas as pd
 
     import atrade.scheduler.runner as runner_mod
-    from atrade.data.quotes import Quote
 
     scheduler = _scheduler_shell()
-    scheduler.quote_provider = Mock()
-    scheduler.quote_provider.batch.return_value = {
-        "600001": Quote(symbol="600001", open=10.5, high=11.0, low=10.4,
-                        price=11.0, volume=100_000),
-    }
 
     def fake_zt(date):
         return pd.DataFrame([
@@ -210,11 +204,25 @@ def test_limit_up_gap_candidates_push(monkeypatch):
             })
 
     monkeypatch.setattr(runner_mod, "HistoryProvider", FakeHistory)
+    import scripts.screen as screen_mod
 
-    scheduler._job_limit_up_gap_candidates()
+    monkeypatch.setattr(screen_mod, "fetch_market_snapshot", lambda: None)
+    monkeypatch.setattr(
+        screen_mod,
+        "load_snapshot",
+        lambda: pd.DataFrame([
+            {
+                "code": "600001", "name": "测试候选", "price": 12.0,
+                "pct_chg": 2.0, "high": 12.3, "low": 11.8,
+                "pe_ttm": 20.0, "pb": 2.0, "volume_lots": 1000,
+            },
+        ]),
+    )
+
+    scheduler._job_next_day_gap_candidates()
 
     args, kwargs = scheduler.delivery_router.send.call_args
-    assert args[0].startswith("limit_up_gap_candidates:")
-    assert args[1] == "🚀 a-trade 首板高开候选"
-    assert "首板" in args[2]
-    assert kwargs["task_name"] == "limit_up_gap_candidates"
+    assert args[0].startswith("next_day_gap_candidates:")
+    assert args[1] == "🚀 a-trade 明日高开候选"
+    assert "明日高开" in args[2]
+    assert kwargs["task_name"] == "next_day_gap_candidates"

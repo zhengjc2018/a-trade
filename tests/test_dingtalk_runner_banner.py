@@ -25,7 +25,7 @@ def runner():
 def test_deliver_at_all_default_for_morning_brief(runner):
     for task in ["morning_brief", "noon_report", "closing_report", "holdings_news",
                  "auction_analysis", "t_status_morning", "t_status_closing",
-                 "screen_review", "limit_up_gap_candidates"]:
+                 "screen_review", "next_day_gap_candidates"]:
         runner._deliver(task, "title", "body", "")
         call_kwargs = runner.delivery_router.send.call_args.kwargs
         assert call_kwargs["at_all"] is True, f"{task} should default at_all=True"

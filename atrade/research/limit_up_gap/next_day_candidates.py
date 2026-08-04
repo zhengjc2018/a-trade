@@ -1,7 +1,7 @@
-"""每日尾盘首板高开候选。
+"""每日尾盘“明日高开”候选。
 
-思路：取当日涨停池，筛选沪深主板首板（连板数=1）、排除一字板，叠加当日
-行情与历史日线计算研究阶段验证过的因子，等权打分后推送 Top N。
+筛选今日未涨停、通过行业/价格/基本面硬过滤的主板个股，用研究阶段验证过的
+因子等权评分，推送综合评分 Top N（默认 3）。
 """
 
 from __future__ import annotations
@@ -12,13 +12,28 @@ import pandas as pd
 
 from .features import add_features
 from .labels import add_limit_labels
+from .qualifiers import (
+    fundamentals_ok,
+    industry_allowed,
+    is_main_board,
+    is_st_name,
+    not_limit_up,
+    price_ok,
+)
 
-MAIN_BOARD_PREFIXES = ("000", "001", "002", "600", "601", "603", "605")
-
-# 研究阶段“高值有利”的因子
-SCORE_FACTORS_HIGH = ("industry_limit_count", "dist_high60", "pos_ma20")
-# 研究阶段“低值有利”的因子
-SCORE_FACTORS_LOW = ("vol_ratio_5", "amplitude_pct")
+# 研究阶段 B（今日未涨停次日高开）验证出的方向：
+# 放量、高振幅、强趋势、远离 60 日低点、板块热度高 -> 高值有利
+SCORE_FACTORS_HIGH = (
+    "amplitude_pct",
+    "pos_ma20",
+    "pos_ma60",
+    "dist_low60",
+    "amount_yi",
+    "vol_ratio_5",
+    "industry_limit_count",
+)
+# 距 60 日高点越近（dist_high60 越低）越有利
+SCORE_FACTORS_LOW = ("dist_high60",)
 
 
 def _to_int(value, default: int = 0) -> int:
@@ -37,47 +52,46 @@ def _to_float(value, default: float = 0.0) -> float:
         return default
 
 
-def build_daily_candidates(
+def build_next_day_candidates(
+    snapshot_df: pd.DataFrame,
     zt_df: pd.DataFrame,
     hp,
-    quote_map: dict,
+    industry_fn,
     trade_date: str,
 ) -> list[dict]:
-    """从当日涨停池构建首板候选（含研究因子）。"""
+    """从全市场快照筛选今日未涨停、基本面合格的候选。"""
     out: list[dict] = []
-    for _, row in zt_df.iterrows():
-        code = str(row.get("代码", "")).zfill(6)
-        name = str(row.get("名称", ""))
-        if not code.startswith(MAIN_BOARD_PREFIXES):
+    for _, row in snapshot_df.iterrows():
+        code = str(row.get("code", "")).zfill(6)
+        name = str(row.get("name", ""))
+        if not is_main_board(code) or is_st_name(name):
             continue
-        if "ST" in name.upper() or "退" in name:
+        if not price_ok(row.get("price")):
             continue
-        if _to_int(row.get("连板数"), 1) != 1:
+        if not fundamentals_ok(row.get("pe_ttm"), row.get("pb")):
             continue
-
-        quote = quote_map.get(code)
-        if quote is None or not quote.is_valid:
+        if not not_limit_up(row.get("pct_chg")):
             continue
-        # 一字板：开盘=最高=最低=现价，尾盘实际买不到
-        if quote.open == quote.high == quote.low == quote.price:
+        industry = industry_fn(code) or "未知行业"
+        if not industry_allowed(industry):
             continue
 
         hist = hp.fetch_with_cache(code, scale="1d", datalen=150, use_snapshot=False)
         if hist is None or len(hist) < 65:
             continue
 
+        price = _to_float(row.get("price"))
         today = {
             "date": trade_date,
-            "open": float(quote.open),
-            "high": float(quote.high),
-            "low": float(quote.low),
-            "close": float(quote.price),
-            "volume": int(quote.volume or 0),
+            "open": price,
+            "high": _to_float(row.get("high"), price),
+            "low": _to_float(row.get("low"), price),
+            "close": price,
+            "volume": int(_to_float(row.get("volume_lots"), 0) * 100),
         }
         hist = hist[["date", "open", "high", "low", "close", "volume"]].copy()
         last_date = str(hist["date"].astype(str).str[:10].iloc[-1])
         if last_date == trade_date:
-            # 日线已含今日：用实时行情覆盖最后一根，避免重复追加导致 prev_close 错位
             hist.loc[hist.index[-1], ["open", "high", "low", "close", "volume"]] = [
                 today["open"],
                 today["high"],
@@ -91,25 +105,23 @@ def build_daily_candidates(
         df = add_limit_labels(df)
         df = add_features(df)
         last = df.iloc[-1]
-        if not bool(last.get("is_first_board", False)):
-            continue
-        if bool(last.get("is_yiziban", False)):
-            continue
-
         features = {
             "vol_ratio_5": _to_float(last.get("vol_ratio_5")),
             "amplitude_pct": _to_float(last.get("amplitude_pct")),
             "dist_high60": _to_float(last.get("dist_high60")),
+            "dist_low60": _to_float(last.get("dist_low60")),
             "pos_ma20": _to_float(last.get("pos_ma20")),
+            "pos_ma60": _to_float(last.get("pos_ma60")),
+            "amount_yi": _to_float(last.get("amount_yi")),
         }
         if any(pd.isna(v) for v in features.values()):
             continue
         out.append({
             "code": code,
             "name": name,
-            "price": float(quote.price),
-            "change_pct": _to_float(row.get("涨跌幅")),
-            "industry": str(row.get("所属行业", "") or "未知行业"),
+            "price": price,
+            "change_pct": _to_float(row.get("pct_chg")),
+            "industry": industry,
             **features,
         })
 
@@ -150,34 +162,36 @@ def score_candidates(candidates: list[dict]) -> list[dict]:
     return df.to_dict("records")
 
 
-def render_daily_candidates(
+def render_next_day_candidates(
     candidates: list[dict],
-    top_n: int = 15,
+    top_n: int = 3,
     now: datetime | None = None,
 ) -> str:
-    """渲染每日首板候选 Markdown；无候选返回空字符串。"""
+    """渲染明日高开候选 Markdown；无候选返回空字符串。"""
     if not candidates:
         return ""
     ts = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
+    shown = candidates[:top_n]
     lines = [
-        "# 🚀 a-trade 首板高开候选",
+        "# 🚀 a-trade 明日高开候选",
         f"_{ts}_",
         "",
-        f"今日首板候选 **{len(candidates)}** 只，按研究因子评分：",
+        f"今日未涨停、基本面合格候选 **{len(candidates)}** 只，"
+        f"综合评分 Top {len(shown)}：",
         "",
-        "| 代码 | 名称 | 现价 | 板块涨停 | 量比 | 振幅% | 得分 |",
-        "|---|---|---:|---:|---:|---:|---:|",
+        "| 排名 | 代码 | 名称 | 现价 | 量比 | 振幅% | 板块涨停 | 得分 |",
+        "|---|---|---|---:|---:|---:|---:|---:|",
     ]
-    for candidate in candidates[:top_n]:
+    for rank, candidate in enumerate(shown, 1):
         lines.append(
-            f"| {candidate['code']} | {candidate['name']} | "
-            f"{candidate['price']:.2f} | {candidate['industry_limit_count']} | "
-            f"{candidate['vol_ratio_5']:.2f} | {candidate['amplitude_pct']:.2f} | "
-            f"{candidate['score']} |"
+            f"| {rank} | {candidate['code']} | {candidate['name']} | "
+            f"{candidate['price']:.2f} | {candidate['vol_ratio_5']:.2f} | "
+            f"{candidate['amplitude_pct']:.2f} | "
+            f"{candidate['industry_limit_count']} | {candidate['score']} |"
         )
     lines.extend([
         "",
-        "- 口径：今日首板、非一字板；买入参考尾盘价，目标 T+1 高开 ≥1%。",
+        "- 口径：今日未涨停，目标 T+1 开盘高开 ≥1%；评分基于量比/振幅/板块热度/价格位置。",
         "_仅供参考，投资有风险_",
     ])
     return "\n".join(lines)

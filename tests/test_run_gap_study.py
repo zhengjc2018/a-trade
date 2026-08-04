@@ -42,6 +42,7 @@ def test_cli_writes_report(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "HistoryProvider", lambda: FakeHistory())
     monkeypatch.setattr(cli, "industry_of", lambda code: "半导体")
+    monkeypatch.setattr(cli, "_allowed_codes", lambda: {"600001", "600002"})
     out = tmp_path / "report.md"
     monkeypatch.setattr(
         sys,
@@ -55,4 +56,4 @@ def test_cli_writes_report(tmp_path, monkeypatch):
     )
     cli.main()
     assert out.exists()
-    assert "# 首板次日高开研究" in out.read_text(encoding="utf-8")
+    assert "# 次日高开研究（今日未涨停）" in out.read_text(encoding="utf-8")
