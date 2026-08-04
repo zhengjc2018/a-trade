@@ -1,0 +1,22 @@
+# 2026-08-03 行业标签与板块热度 Task 3 STATUS
+
+- **总体状态：** 完成（有 brief 断言不一致记录）
+- **当前阶段：** TDD 实施完成
+- **当前步骤：** 已自检并写入 task report
+- **已完成：**
+  - 读取 task brief
+  - 检查仓库状态与既有任务进度文件
+  - 创建进度跟踪目录
+  - 写入 brief 指定测试文件
+  - 运行聚焦测试确认 RED：`ModuleNotFoundError: No module named 'atrade.research.limit_up_gap.industry'`
+  - 按 brief 创建 industry.py 实现
+  - 发现 brief 测试断言与实现不一致：输入包含两个交易日，正确分组应为 5 行，而非 4
+  - 修正测试断言为 `len(heat) == 5`，保持实现按 `date + industry` 统计
+  - 运行聚焦测试确认 GREEN：2 passed
+  - 运行 ruff 检查通过
+  - 写入 task report
+- **下一步：** 等待控制器审查与提交
+- **阻塞项：** brief 中测试断言与实现不一致；已按语义正确值修正测试并记录
+- **验证命令：** `.venv/bin/python -m pytest tests/test_limit_up_gap_industry.py -q`
+- **最终结果：** PASS（2 passed）
+- **最后更新时间：** 2026-08-03 23:08

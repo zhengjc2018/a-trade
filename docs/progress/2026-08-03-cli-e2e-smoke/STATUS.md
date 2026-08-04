@@ -1,0 +1,24 @@
+# 2026-08-03 CLI 与端到端冒烟 Task 7 STATUS
+
+- **总体状态：** 完成（有环境注意事项）
+- **当前阶段：** 完成
+- **当前步骤：** 编写任务报告
+- **已完成：**
+  - 读取 task 7 brief
+  - 检查 study/report/industry/ztpool 与 CLI 测试约定
+  - 创建进度跟踪文件
+  - 写入 tests/test_run_gap_study.py
+  - 运行聚焦测试确认 RED：`ModuleNotFoundError: No module named 'scripts.run_gap_study'`
+- 按 brief 创建 scripts/run_gap_study.py
+- 运行聚焦测试确认 GREEN：1 passed
+- 修复 ruff I001 导入排序并确认通过
+- 运行相关 limit-up 测试确认 13 passed
+- 运行完整测试套件；12 个既有 Unix socket 测试因沙箱禁止绑定 `/tmp` 报 `PermissionError`
+- 排除这 12 个环境阻塞用例后完整测试通过，含 1 skipped
+- 运行 CLI `--help` 通过
+- 写入 task report
+- **下一步：** 控制器审查
+- **阻塞项：** 无（仅环境限制：沙箱不允许 `/tmp` Unix socket）
+- **验证命令：** `.venv/bin/python -m pytest tests/test_run_gap_study.py -q`、`.venv/bin/python -m ruff check ...`、`.venv/bin/python -m pytest -q`
+- **最终结果：** DONE_WITH_CONCERNS
+- **最后更新时间：** 2026-08-03
