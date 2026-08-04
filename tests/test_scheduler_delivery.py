@@ -130,8 +130,10 @@ def test_scheduler_registers_reset_and_closing_at_1535():
     assert "t_replay" in jobs  # 做T复盘独立推送（15:40）
     assert "pre_market_screen" in jobs  # 早盘选股 9:26
     assert "screen_review" in jobs  # 今日荐股胜率 15:00
+    assert "limit_up_gap_candidates" in jobs  # 首板高开候选 14:50
     assert "hour='9', minute='30'" in str(jobs["t_state_reset"].trigger)
     assert "hour='9', minute='26'" in str(jobs["pre_market_screen"].trigger)
+    assert "hour='14', minute='50'" in str(jobs["limit_up_gap_candidates"].trigger)
     assert "hour='15', minute='0'" in str(jobs["screen_review"].trigger)
     assert "hour='15', minute='35'" in str(jobs["closing_report"].trigger)
     assert "hour='15', minute='40'" in str(jobs["t_replay"].trigger)
@@ -169,3 +171,50 @@ def test_screen_review_skips_when_no_picks():
 
     assert scheduler._job_screen_review() is None
     scheduler.delivery_router.send.assert_not_called()
+
+
+def test_limit_up_gap_candidates_push(monkeypatch):
+    import pandas as pd
+
+    import atrade.scheduler.runner as runner_mod
+    from atrade.data.quotes import Quote
+
+    scheduler = _scheduler_shell()
+    scheduler.quote_provider = Mock()
+    scheduler.quote_provider.batch.return_value = {
+        "600001": Quote(symbol="600001", open=10.5, high=11.0, low=10.4,
+                        price=11.0, volume=100_000),
+    }
+
+    def fake_zt(date):
+        return pd.DataFrame([
+            {"代码": "600001", "名称": "测试首板", "涨跌幅": 10.0,
+             "连板数": 1, "所属行业": "半导体"},
+        ])
+
+    monkeypatch.setattr(runner_mod, "fetch_zt_day", fake_zt)
+
+    class FakeHistory:
+        def fetch_with_cache(self, code, scale="1d", datalen=150, use_snapshot=False):
+            import numpy as np
+            n = 70
+            closes = np.linspace(10.0, 15.0, n)
+            closes[-1] = 10.0
+            return pd.DataFrame({
+                "date": pd.date_range("2026-01-01", periods=n, freq="D").strftime("%Y-%m-%d"),
+                "open": closes * 0.99,
+                "high": closes * 1.01,
+                "low": closes * 0.98,
+                "close": closes,
+                "volume": np.full(n, 100_000),
+            })
+
+    monkeypatch.setattr(runner_mod, "HistoryProvider", FakeHistory)
+
+    scheduler._job_limit_up_gap_candidates()
+
+    args, kwargs = scheduler.delivery_router.send.call_args
+    assert args[0].startswith("limit_up_gap_candidates:")
+    assert args[1] == "🚀 a-trade 首板高开候选"
+    assert "首板" in args[2]
+    assert kwargs["task_name"] == "limit_up_gap_candidates"

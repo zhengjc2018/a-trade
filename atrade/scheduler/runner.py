@@ -25,7 +25,7 @@ from atrade.config import (
 from atrade.config import (
     load_watch_keywords,
 )
-from atrade.data import QuoteProvider
+from atrade.data import HistoryProvider, QuoteProvider
 from atrade.monitor import ScreenMonitorRunner, TMonitorRunner, TradingCalendar
 from atrade.monitor.screen_ledger import RecommendationLedger
 from atrade.monitor.screen_review import build_screen_review
@@ -33,6 +33,12 @@ from atrade.news.collector import NewsCollector
 from atrade.notify import DeliveryLedger, DeliveryRouter, DingTalkNotifier, OpenClawNotifier
 from atrade.notify.dingtalk import render_banner
 from atrade.report.generator import ReportGenerator
+from atrade.research.limit_up_gap.daily_candidates import (
+    build_daily_candidates,
+    render_daily_candidates,
+    score_candidates,
+)
+from atrade.research.limit_up_gap.ztpool import fetch_zt_day
 from atrade.scheduler.recovery import RecoveryTask, recover_missed_tasks
 
 _log = logging.get_logger()
@@ -166,6 +172,16 @@ class DailyScheduler:
             CronTrigger(hour=9, minute=25),
             id="auction_analysis",
             name="集合竞价分析",
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
+
+        # 首板高开候选：每个交易日 14:50（尾盘，收盘前推送）
+        self.scheduler.add_job(
+            self._job_limit_up_gap_candidates,
+            CronTrigger(hour=14, minute=50),
+            id="limit_up_gap_candidates",
+            name="首板高开候选",
             coalesce=True,
             misfire_grace_time=1800,
         )
@@ -331,6 +347,7 @@ class DailyScheduler:
         "t_status_morning",
         "t_status_closing",
         "screen_review",
+        "limit_up_gap_candidates",
     })
 
     def _deliver(
@@ -457,6 +474,37 @@ class DailyScheduler:
         report = self.report_gen.generate_auction_report()
         suffix = f":{datetime.now().strftime('%H%M')}"
         return self._deliver("auction_analysis", "📈 a-trade 竞价分析", report, suffix)
+
+    def _job_limit_up_gap_candidates(self):
+        """14:50 推送今日首板高开候选（尾盘买入，T+1 高开目标）。"""
+        if not self.calendar.is_trade_day():
+            return
+        logger.info("⏰ 触发: 首板高开候选")
+        today = datetime.now().strftime("%Y-%m-%d")
+        zt_df = fetch_zt_day(today)
+        if zt_df is None or zt_df.empty:
+            logger.info("今日无涨停池数据，跳过首板候选")
+            return
+        codes = zt_df["代码"].astype(str).str.zfill(6).tolist()
+        quotes = self.quote_provider.batch(codes)
+        candidates = build_daily_candidates(
+            zt_df,
+            HistoryProvider(),
+            quotes,
+            today,
+        )
+        if not candidates:
+            logger.info("今日无符合条件首板，跳过推送")
+            return
+        scored = score_candidates(candidates)
+        md = render_daily_candidates(scored)
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver(
+            "limit_up_gap_candidates",
+            "🚀 a-trade 首板高开候选",
+            md,
+            suffix,
+        )
 
     def _job_pre_market_screen(self):
         """早盘选股推送：每个交易日 9:26 跑，覆盖 9:00-9:30 空档。

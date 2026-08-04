@@ -38,7 +38,7 @@ def test_banner_task_name_to_emoji_mapping():
         "closing_report", "holdings_news", "delivery_heartbeat",
         "t_monitor", "t_status_morning", "t_status_closing",
         "t_replay",
-        "screen_monitor", "screen_review", "backtest",
+        "screen_monitor", "screen_review", "limit_up_gap_candidates", "backtest",
     ]:
         b = render_banner(task)
         assert "#" not in b.splitlines()[0], f"banner {task} should not use H1"

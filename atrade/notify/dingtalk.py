@@ -188,6 +188,7 @@ _BANNERS: dict[str, tuple[str, str]] = {
     "t_replay":         ("📊", "a-trade 今日做T总结"),
     "screen_monitor":   ("🔍", "a-trade 盘中选股"),
     "screen_review":    ("📊", "a-trade 今日荐股胜率"),
+    "limit_up_gap_candidates": ("🚀", "a-trade 首板高开候选"),
     "backtest":         ("🧪", "a-trade 回测报告"),
 }
 
