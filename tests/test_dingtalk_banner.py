@@ -13,7 +13,7 @@ from atrade.notify.dingtalk import render_banner, render_for_dingtalk
 
 def test_banner_contains_emoji_and_title():
     md = render_banner("morning_brief", "海外收盘")
-    assert "# 🟢" in md
+    assert "🟢 **a-trade 早盘快讯**" in md
     assert "a-trade 早盘快讯" in md
     assert "海外收盘" in md
     assert md.count(chr(10)) >= 2
@@ -22,14 +22,14 @@ def test_banner_contains_emoji_and_title():
 def test_banner_without_subtitle():
     md = render_banner("closing_report")
     assert "a-trade 收盘日报" in md
-    assert "# 🔴" in md
+    assert "🔴 **a-trade 收盘日报**" in md
     assert "🕒" in md
 
 
 def test_banner_unknown_task_uses_default():
     md = render_banner("nonexistent")
     assert "a-trade nonexistent" in md
-    assert "# 📣" in md
+    assert "📣 **a-trade nonexistent**" in md
 
 
 def test_banner_task_name_to_emoji_mapping():
@@ -38,10 +38,11 @@ def test_banner_task_name_to_emoji_mapping():
         "closing_report", "holdings_news", "delivery_heartbeat",
         "t_monitor", "t_status_morning", "t_status_closing",
         "t_replay",
-        "screen_monitor", "backtest",
+        "screen_monitor", "screen_review", "backtest",
     ]:
         b = render_banner(task)
-        assert b.startswith("#"), f"banner {task} missing # heading"
+        assert "#" not in b.splitlines()[0], f"banner {task} should not use H1"
+        assert "**" in b
 
 
 def test_banner_t_replay_uses_dedicated_title():
@@ -74,4 +75,7 @@ def test_render_for_dingtalk_handles_three_col_table():
 
 def test_render_for_dingtalk_passthrough_no_table():
     md = "## heading" + chr(10) + chr(10) + "body text"
-    assert render_for_dingtalk(md) == md
+    rendered = render_for_dingtalk(md)
+    assert "**heading**" in rendered
+    assert "body text" in rendered
+    assert "## heading" not in rendered

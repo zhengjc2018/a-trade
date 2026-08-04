@@ -187,6 +187,7 @@ _BANNERS: dict[str, tuple[str, str]] = {
     "t_status_closing": ("📉", "a-trade 收盘做T汇总"),
     "t_replay":         ("📊", "a-trade 今日做T总结"),
     "screen_monitor":   ("🔍", "a-trade 盘中选股"),
+    "screen_review":    ("📊", "a-trade 今日荐股胜率"),
     "backtest":         ("🧪", "a-trade 回测报告"),
 }
 
@@ -198,6 +199,9 @@ def render_banner(
     time_stamp: Optional[str] = None,
 ) -> str:
     """生成钉钉顶端醒目横幅，避免被折叠 / 与 t_monitor 噪声混淆。
+
+    注意：钉钉移动端对 markdown 大标题兼容较差，这里用加粗文本而不是
+    `#` 一级标题，避免消息在群里只显示标题、正文被折叠。
 
     Returns:
         一段 Markdown 字符串，应放在推送内容最前。
@@ -211,7 +215,7 @@ def render_banner(
     else:
         second_line = f"**🕒 {ts}**"
     parts = [
-        f"# {level_emoji} {title}",
+        f"{level_emoji} **{title}**",
         second_line,
         "---",
     ]
@@ -241,6 +245,12 @@ def render_for_dingtalk(md: str) -> str:
                 output.append(_render_table_row(headers, values))
                 index += 1
             continue
-        output.append(line)
+        # 钉钉移动端对大标题支持差，标题统一转成加粗文本避免折叠
+        stripped = line.strip()
+        if re.match(r"^#{1,6}\s+\S", stripped):
+            heading = re.sub(r"^#{1,6}\s+", "", stripped)
+            output.append(f"**{heading}**")
+        else:
+            output.append(line)
         index += 1
     return "\n".join(output)

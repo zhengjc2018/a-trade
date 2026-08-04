@@ -24,7 +24,8 @@ def runner():
 
 def test_deliver_at_all_default_for_morning_brief(runner):
     for task in ["morning_brief", "noon_report", "closing_report", "holdings_news",
-                 "auction_analysis", "t_status_morning", "t_status_closing"]:
+                 "auction_analysis", "t_status_morning", "t_status_closing",
+                 "screen_review"]:
         runner._deliver(task, "title", "body", "")
         call_kwargs = runner.delivery_router.send.call_args.kwargs
         assert call_kwargs["at_all"] is True, f"{task} should default at_all=True"
@@ -45,9 +46,9 @@ def test_deliver_at_all_explicit_override(runner):
 def test_deliver_prepends_banner(runner):
     runner._deliver("morning_brief", "海外收盘", "正文 ABC", "")
     sent_md = runner.delivery_router.send.call_args[0][2]
-    assert "# 🟢 a-trade 早盘快讯" in sent_md
+    assert "🟢 **a-trade 早盘快讯**" in sent_md
     assert "正文 ABC" in sent_md
-    assert sent_md.index("# 🟢") < sent_md.index("正文 ABC")
+    assert sent_md.index("🟢") < sent_md.index("正文 ABC")
 
 
 def test_deliver_task_key_includes_minute(runner):
@@ -63,10 +64,10 @@ def test_deliver_task_key_includes_minute(runner):
 def test_deliver_banner_for_unknown_task(runner):
     runner._deliver("some_new_task", "title", "body", "")
     sent_md = runner.delivery_router.send.call_args[0][2]
-    assert "# 📣 a-trade some_new_task" in sent_md
+    assert "📣 **a-trade some_new_task**" in sent_md
 
 
 def test_render_banner_unknown_uses_default_title():
     from atrade.notify.dingtalk import render_banner
     md = render_banner("xyz")
-    assert "# 📣 a-trade xyz" in md
+    assert "📣 **a-trade xyz**" in md
