@@ -129,8 +129,43 @@ def test_scheduler_registers_reset_and_closing_at_1535():
     assert "t_state_reset" in jobs
     assert "t_replay" in jobs  # 做T复盘独立推送（15:40）
     assert "pre_market_screen" in jobs  # 早盘选股 9:26
+    assert "screen_review" in jobs  # 今日荐股胜率 15:00
     assert "hour='9', minute='30'" in str(jobs["t_state_reset"].trigger)
     assert "hour='9', minute='26'" in str(jobs["pre_market_screen"].trigger)
+    assert "hour='15', minute='0'" in str(jobs["screen_review"].trigger)
     assert "hour='15', minute='35'" in str(jobs["closing_report"].trigger)
     assert "hour='15', minute='40'" in str(jobs["t_replay"].trigger)
     assert "hour='15', minute='40'" in str(jobs["closing_report_guard"].trigger)
+
+
+def test_screen_review_pushes_winrate_report():
+    from types import SimpleNamespace
+
+    from atrade.monitor.screen_ledger import Recommendation
+
+    scheduler = _scheduler_shell()
+    scheduler.screen_ledger = Mock()
+    scheduler.screen_ledger.first_picks.return_value = [
+        Recommendation("600519", "贵州茅台", 1253.0, "2026-08-03T09:26:05"),
+    ]
+    scheduler.quote_provider = Mock()
+    scheduler.quote_provider.batch.return_value = {
+        "600519": SimpleNamespace(price=1260.0, is_valid=True),
+    }
+
+    scheduler._job_screen_review()
+
+    args, kwargs = scheduler.delivery_router.send.call_args
+    assert args[0].startswith("screen_review:")
+    assert args[1] == "📊 a-trade 今日荐股胜率"
+    assert "胜率" in args[2]
+    assert kwargs["task_name"] == "screen_review"
+
+
+def test_screen_review_skips_when_no_picks():
+    scheduler = _scheduler_shell()
+    scheduler.screen_ledger = Mock()
+    scheduler.screen_ledger.first_picks.return_value = []
+
+    assert scheduler._job_screen_review() is None
+    scheduler.delivery_router.send.assert_not_called()

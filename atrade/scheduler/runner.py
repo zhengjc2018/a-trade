@@ -25,7 +25,10 @@ from atrade.config import (
 from atrade.config import (
     load_watch_keywords,
 )
+from atrade.data import QuoteProvider
 from atrade.monitor import ScreenMonitorRunner, TMonitorRunner, TradingCalendar
+from atrade.monitor.screen_ledger import RecommendationLedger
+from atrade.monitor.screen_review import build_screen_review
 from atrade.news.collector import NewsCollector
 from atrade.notify import DeliveryLedger, DeliveryRouter, DingTalkNotifier, OpenClawNotifier
 from atrade.notify.dingtalk import render_banner
@@ -107,7 +110,12 @@ class DailyScheduler:
         self.watch_keywords = load_watch_keywords() or self._load_keywords()
         self.monitor_config = load_monitor_config_from_module()
         self.calendar = TradingCalendar()
-        self.screen_runner = ScreenMonitorRunner(self.monitor_config.get("screen"))
+        self.quote_provider = QuoteProvider()
+        self.screen_ledger = RecommendationLedger()
+        self.screen_runner = ScreenMonitorRunner(
+            self.monitor_config.get("screen"),
+            ledger=self.screen_ledger,
+        )
         tmon_cfg = dict(self.monitor_config.get("t_monitor") or {})
         tmon_cfg["symbols"] = _derive_t_symbols(
             self.holdings,
@@ -120,6 +128,7 @@ class DailyScheduler:
             holdings=self.holdings,
             watch_symbols=self.watch_symbols,
             watch_keywords=self.watch_keywords,
+            quote_provider=self.quote_provider,
         )
 
         self.group_openid = os.getenv("QQ_TARGET_GROUP")
@@ -170,6 +179,16 @@ class DailyScheduler:
             name="早盘选股",
             coalesce=True,
             misfire_grace_time=3600,
+        )
+
+        # 今日荐股胜率：每个交易日 15:00（收盘后，推送价→收盘价）
+        self.scheduler.add_job(
+            self._job_screen_review,
+            CronTrigger(hour=15, minute=0),
+            id="screen_review",
+            name="今日荐股胜率",
+            coalesce=True,
+            misfire_grace_time=7200,
         )
 
         # 早盘快讯：每个交易日 8:00
@@ -311,6 +330,7 @@ class DailyScheduler:
         "holdings_news",
         "t_status_morning",
         "t_status_closing",
+        "screen_review",
     })
 
     def _deliver(
@@ -342,7 +362,8 @@ class DailyScheduler:
             at_all = task_name in self.AT_ALL_TASKS
 
         # 顶部插入醒目 banner（避免被折叠 / 与 t_monitor 噪声混淆）
-        banner = render_banner(task_name, banner_subtitle or title)
+        # 默认副标题留空，避免与消息卡片标题重复，减少移动端折叠概率
+        banner = render_banner(task_name, banner_subtitle or "")
         content = f"{banner}\n{markdown}"
 
         return self.delivery_router.send(
@@ -448,7 +469,7 @@ class DailyScheduler:
         if not self.calendar.is_trade_day():
             return
         logger.info("⏰ 触发: 早盘选股")
-        md = self.screen_runner.run_once()
+        md = self.screen_runner.run_once(source="pre_market")
         if not md:
             return
         suffix = f":{datetime.now().strftime('%H%M')}"
@@ -464,11 +485,28 @@ class DailyScheduler:
         if not self.calendar.is_open_for_intraday_scan():
             return
         logger.info("⏰ 触发: 盘中选股")
-        md = self.screen_runner.run_once()
+        md = self.screen_runner.run_once(source="intraday")
         if not md:
             return
         suffix = f":{datetime.now().strftime('%H%M')}"
         return self._deliver("screen_monitor", "📈 a-trade 盘中选股", md, suffix)
+
+    def _job_screen_review(self):
+        """15:00 推送今日荐股胜率：买入价=首次推送价，盈亏=收盘价-推送价。"""
+        if not self.calendar.is_trade_day():
+            return
+        logger.info("⏰ 触发: 今日荐股胜率")
+        today = datetime.now().strftime("%Y-%m-%d")
+        records = self.screen_ledger.first_picks(today)
+        if not records:
+            logger.info("今日无荐股推送，跳过胜率复盘")
+            return
+        quotes = self.quote_provider.batch([r.symbol for r in records])
+        md = build_screen_review(records, quotes)
+        if not md:
+            return
+        suffix = f":{datetime.now().strftime('%H%M')}"
+        return self._deliver("screen_review", "📊 a-trade 今日荐股胜率", md, suffix)
 
     def _job_t_monitor(self):
         if not self.calendar.is_open_for_intraday_scan():
