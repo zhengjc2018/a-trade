@@ -1,7 +1,15 @@
 """竞价分析器测试。"""
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from atrade.analyzer import auction as auction_mod
+from atrade.analyzer.auction import SectorAuction
 
 
 def _fake_df():
@@ -31,7 +39,8 @@ def test_fetch_sector_auction_sorts_by_change_pct():
 
 
 def test_fetch_sector_auction_handles_failure():
-    with patch("akshare.stock_sector_spot", side_effect=RuntimeError("network")):
+    with patch("akshare.stock_sector_spot", side_effect=RuntimeError("network")), \
+         patch.object(auction_mod, "_sectors_from_em", return_value=[]):
         from atrade.analyzer.auction import fetch_sector_auction
         assert fetch_sector_auction(top_n=5) == []
 
@@ -67,3 +76,64 @@ def test_report_handles_empty():
         gen = ReportGenerator(holdings=[], watch_symbols=[])
         md = gen.generate_auction_report()
         assert "暂无数据" in md
+
+
+def test_fetch_sector_auction_tries_next_sina_indicator_when_leaders_empty():
+    """新浪行业个股字段为空时，应自动尝试其他新浪 indicator。"""
+    empty_df = pd.DataFrame([
+        {"板块": "发电设备", "涨跌幅": 5.74, "总成交额": 1e10,
+         "股票代码": "", "股票名称": "", "个股-涨跌幅": None},
+    ])
+
+    def fake_sina(indicator):
+        return empty_df if indicator == "新浪行业" else _fake_df()
+
+    with patch.object(auction_mod, "_fetch_sina_sector", side_effect=fake_sina):
+        result = auction_mod.fetch_sector_auction(top_n=10)
+    assert len(result) == 3
+    assert result[0].leader_symbol == "sh600343"
+    assert result[0].leader_name == "航天动力"
+
+
+def test_fetch_sector_auction_uses_em_fallback():
+    """所有新浪源都缺个股字段时，应回退到东财备用源。"""
+    empty_df = pd.DataFrame([
+        {"板块": "发电设备", "涨跌幅": 5.74, "总成交额": 1e10,
+         "股票代码": "", "股票名称": "", "个股-涨跌幅": None},
+    ])
+    em_sectors = [
+        SectorAuction(
+            name="造纸行业",
+            change_pct=3.94,
+            leader_symbol="000815",
+            leader_name="美利云",
+            leader_change_pct=10.01,
+            turnover=0.0,
+        ),
+    ]
+    with patch.object(auction_mod, "_fetch_sina_sector", return_value=empty_df), \
+         patch.object(auction_mod, "_sectors_from_em", return_value=em_sectors):
+        result = auction_mod.fetch_sector_auction(top_n=5)
+    assert len(result) == 1
+    assert result[0].leader_symbol == "000815"
+    assert result[0].leader_name == "美利云"
+
+
+def test_report_renders_placeholder_when_leaders_empty():
+    """领涨股为空时报告应给出明确提示，而不是空表格。"""
+    fake_sectors = [
+        SectorAuction(
+            name="发电设备",
+            change_pct=5.74,
+            leader_symbol="sh600343",
+            leader_name="航天动力",
+            leader_change_pct=20.04,
+            turnover=1e10,
+        ),
+    ]
+    with patch.object(auction_mod, "fetch_sector_auction", return_value=fake_sectors), \
+         patch.object(auction_mod, "fetch_top_gainers", return_value=[]):
+        from atrade.report.generator import ReportGenerator
+        gen = ReportGenerator(holdings=[], watch_symbols=[])
+        md = gen.generate_auction_report()
+    assert "暂无领涨股数据" in md

@@ -291,14 +291,17 @@ class ReportGenerator:
             "",
             "## 🚀 领涨股 TOP 10",
             "",
-            "| 代码 | 名称 | 涨幅 | 所属板块 |",
-            "|---|---|---:|---|",
         ])
-        for ld in leaders:
-            lines.append(
-                f"| {ld['symbol']} | {ld['name']} | "
-                f"{ld['change_pct']:+.2f}% | {ld['sector']} |"
-            )
+        if leaders:
+            lines.append("| 代码 | 名称 | 涨幅 | 所属板块 |")
+            lines.append("|---|---|---:|---|")
+            for ld in leaders:
+                lines.append(
+                    f"| {ld['symbol']} | {ld['name']} | "
+                    f"{ld['change_pct']:+.2f}% | {ld['sector']} |"
+                )
+        else:
+            lines.append("- 暂无领涨股数据（数据源未提供个股行情）")
 
         lines.extend([
             "",
